@@ -9,7 +9,7 @@
 
 ### Bước 1: Clone repo về máy
 ```bash
-git clone <link-repo>
+git clone https://github.com/MaGiaVy/DoAnPython
 cd project
 ```
 
@@ -25,13 +25,7 @@ train_images/
 test_images/
 ```
 
-### Bước 3: Tạo file .env
-Sao chép file `.env.example` thành `.env`:
-```bash
-copy .env.example .env   # Windows
-cp .env.example .env     # Mac/Linux
-```
-
+### Bước 3: Sửa file .env
 Mở file `.env` và sửa đường dẫn cho đúng máy bạn:
 ```
 SHOPEE_DATA_DIR=C:\Users\TenBan\Downloads\shopee-product-matching
