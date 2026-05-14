@@ -1,2 +1,5 @@
 # Bỏ qua toàn bộ ảnh để Git nhẹ nhàng
 data/raw/train_images/
+
+#Bỏ qua môi trường ảo của từng máy.
+venv/
