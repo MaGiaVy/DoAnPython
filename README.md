@@ -88,7 +88,7 @@ Mở file:
 project/notebooks/BTCT_TUAN2_33.ipynb
 ```
 
-Tìm dòng:
+Tìm dòng tại Cell_2 :
 
 ```python
 DATA_DIR = r'd:\Study\docs\Python\workspace\DoAnPython\project\data\raw'
