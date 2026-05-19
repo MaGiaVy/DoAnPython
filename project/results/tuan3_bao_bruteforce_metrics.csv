@@ -1,0 +1,5 @@
+method,K,Precision@K,Recall@K,mAP
+ResNet50 + Cosine Brute-force,1,0.678,0.678,0.727
+ResNet50 + Cosine Brute-force,3,0.2526,0.758,0.727
+ResNet50 + Cosine Brute-force,5,0.1572,0.786,0.727
+ResNet50 + Cosine Brute-force,10,0.0842,0.842,0.727
