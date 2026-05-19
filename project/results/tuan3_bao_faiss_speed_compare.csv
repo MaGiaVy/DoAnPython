@@ -1,0 +1,3 @@
+method,time_seconds,speedup_vs_bruteforce
+ResNet50 + Cosine brute-force,0.134254,1.0
+ResNet50 + FAISS IndexFlatIP,0.094378,1.42

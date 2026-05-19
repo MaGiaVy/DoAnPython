@@ -1,0 +1,3 @@
+Phương pháp,Thời gian (giây),Speedup,Ghi chú
+Cosine Brute-force,0.165572,1.0,"Ma trận N×N, O(N²d)"
+FAISS IndexFlatIP,0.030737,5.39,"BLAS/SIMD, exact search"
