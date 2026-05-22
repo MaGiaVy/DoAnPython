@@ -1,0 +1,8 @@
+Metric,Value
+mAP Toàn tập,0.2049
+Precision@1,0.2459
+Recall@1,0.0685
+Precision@5,0.1596
+Recall@5,0.1913
+Precision@10,0.1172
+Recall@10,0.2566
