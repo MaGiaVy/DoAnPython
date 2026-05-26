@@ -44,7 +44,7 @@ print()
 # Kiem tra cac buoc quan trong
 steps = {
     'BUOC 1 - Phan chia du lieu':      'train_test_split',
-    'BUOC 2 - DINOv2':                 'torch.hub.load',
+    'BUOC 2 - SigLIP':                 'SiglipVisionModel',
     'BUOC 3 - TF-IDF':                 'TfidfVectorizer',
     'BUOC 4 - Grid Search':            'np.arange(0.50',
     'BUOC 5 - pHash Boosting':         'PHASH_BOOST',
@@ -55,7 +55,7 @@ steps = {
     'compute_precision_at_1':          'compute_precision_at_1',
     'compute_recall_at_k':             'compute_recall_at_k',
     'FAISS IndexFlatIP':               'IndexFlatIP',
-    'Tieng Viet (comments)':           'Dang',
+    'Tieng Viet (comments)':           'Đang',
 }
 
 all_src = '\n'.join(''.join(c['source']) for c in nb['cells'])
