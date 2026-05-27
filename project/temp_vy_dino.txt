@@ -1,0 +1,1378 @@
+# 🦉 SigLIP Visual Search — Tuần 4
+## Nâng cấp hệ thống tìm kiếm hình ảnh Shopee: ResNet50 → SigLIP
+### 👤 Mã Gia Vỹ | Nhóm 3 | Lead Developer
+
+---
+
+| Hạng mục | Tuần 3 (Baseline) | Tuần 4 (Mục tiêu) |
+|---|---|---|
+| **Mô hình ảnh** | ResNet50 (2048-dim) | **SigLIP so400m (1152-dim)** |
+| **Đặc trưng văn bản** | TF-IDF raw | TF-IDF + SVD (256-dim) |
+| **Fusion** | Weighted Late Fusion | **Grid Search α (0.50 → 0.90)** |
+| **Reranking** | pHash | **pHash Boost + Rerank Top-50→5** |
+| **mAP@5** | 0.7635 | **>= 0.80** |
+
+---
+
+### 📋 Quy trình Notebook:
+1. **Bước 1:** Phân chia Validation/Test Set (20%/80%) — **KHÔNG DATA LEAKAGE**
+2. **Bước 2:** Trích xuất đặc trưng SigLIP (1152-dim vision features)
+3. **Bước 3:** Trích xuất đặc trưng TF-IDF (256-dim sau TruncatedSVD)
+4. **Bước 4:** Grid Search tham số α trên **Validation Set** (tuning)
+5. **Bước 5:** Đánh giá cuối cùng + pHash Boosting + Reranking trên **Test Set**
+
+> ⚠️ **NGHIÊM CẤM DATA LEAKAGE:** Chỉ tune siêu tham số trên Validation Set. Test Set chỉ dùng để báo cáo kết quả CUỐI CÙNG, không được tune bất kỳ tham số nào trên đây.
+
+---
+# ============================================================
+# 📦 CÀI ĐẶT CÁC THƯ VIỆN CẦN THIẾT (Google Colab)
+# ============================================================
+
+# Cài đặt FAISS (thử GPU trước, nếu không có thì dùng CPU)
+try:
+    import faiss
+    print('✅ FAISS đã được cài đặt sẵn.')
+except ImportError:
+    print('🔄 Đang cài đặt faiss-gpu...')
+    import subprocess
+    result = subprocess.run(
+        ['pip', 'install', 'faiss-gpu', '-q'],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print('⚠️  faiss-gpu thất bại, cài faiss-cpu...')
+        subprocess.run(['pip', 'install', 'faiss-cpu', '-q'])
+    print('✅ Đã cài xong FAISS!')
+
+# Cài đặt imagehash để tính pHash
+try:
+    import imagehash
+    print('✅ imagehash đã được cài đặt sẵn.')
+except ImportError:
+    print('🔄 Đang cài đặt imagehash...')
+    import subprocess
+    subprocess.run(['pip', 'install', 'imagehash', '-q'])
+    print('✅ Đã cài xong imagehash!')
+
+# Cài đặt Hugging Face transformers nếu chưa có
+try:
+    import transformers
+    print('✅ transformers đã được cài đặt sẵn.')
+except ImportError:
+    print('🔄 Đang cài đặt transformers...')
+    import subprocess
+    subprocess.run(['pip', 'install', 'transformers', '-q'])
+    print('✅ Đã cài xong transformers!')
+
+print('\n🎉 Tất cả thư viện đã sẵn sàng!')
+
+---
+# ============================================================
+# 🔗 KẾT NỐI GOOGLE DRIVE
+# ============================================================
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+print('✅ Đã kết nối Google Drive thành công!')
+---
+# ============================================================
+# 📚 IMPORT CÁC THƯ VIỆN
+# ============================================================
+import os
+import re
+import time
+import warnings
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+# PyTorch
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from PIL import Image
+
+# FAISS
+import faiss
+
+# pHash
+import imagehash
+
+# Sklearn
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.model_selection import train_test_split
+
+# Tiến trình
+from tqdm import tqdm
+
+warnings.filterwarnings('ignore')
+
+# Kiểm tra GPU
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print('=' * 55)
+print('🖥️  THÔNG TIN PHẦN CỨNG')
+print('=' * 55)
+print(f'Thiết bị PyTorch : {device}')
+if torch.cuda.is_available():
+    gpu_name = torch.cuda.get_device_name(0)
+    gpu_mem  = torch.cuda.get_device_properties(0).total_memory / 1e9
+    print(f'Tên GPU          : {gpu_name}')
+    print(f'VRAM             : {gpu_mem:.2f} GB')
+    print(f'CUDA Version     : {torch.version.cuda}')
+else:
+    print('⚠️  KHÔNG CÓ GPU — Tốc độ xử lý sẽ rất chậm!')
+print('=' * 55)
+---
+# ============================================================
+# ⚙️  CẤU HÌNH DỰ ÁN — THAY ĐỔI ĐƯỜNG DẪN TẠI ĐÂY
+# ============================================================
+
+# --- Đường dẫn gốc trên Google Drive ---
+BASE_DIR        = '/content/drive/MyDrive/DuLieuPython'
+
+# --- Đường dẫn thư mục ảnh (chứa 34,250 ảnh Shopee) ---
+IMAGE_DIR       = os.path.join(BASE_DIR, 'train_images.zip')
+
+# --- File CSV chính (34,250 dòng) ---
+CANDIDATE_CSV   = os.path.join(BASE_DIR, 'train.csv')
+
+# --- Thư mục lưu features đã trích xuất ---
+PROCESSED_DIR  = os.path.join(BASE_DIR, 'processed_features')
+os.makedirs(PROCESSED_DIR, exist_ok=True)
+
+# --- Thư mục lưu kết quả ---
+RESULTS_DIR    = os.path.join(BASE_DIR, 'results')
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
+# --- Cấu hình mô hình SigLIP ---
+SIGLIP_MODEL_NAME = 'google/siglip-so400m-patch14-224' # Phiên bản lớn: 'google/siglip-so400m-patch14-224' (1152-dim), phiên bản nhỏ: 'google/siglip-base-patch16-224' (768-dim)
+
+# --- Siêu tham số ---
+BATCH_SIZE     = 32    # Batch size SigLIP (giảm từ 64 xuống 32 vì model lớn cần nhiều VRAM hơn)
+NUM_WORKERS    = 2     # Số luồng DataLoader
+IMG_SIZE       = 224   # Kích thước ảnh đầu vào (SigLIP so400m sử dụng 224x224)
+TOP_K          = 5     # Số kết quả cuối cùng trả về
+TOP_RERANK     = 100   # Số ứng viên lấy ra trước khi rerank (tăng từ 50->100)
+SVD_DIM        = 256   # Số chiều TF-IDF sau SVD
+
+# --- Tham số pHash Boosting ---
+PHASH_THRESHOLD = 5    # Boost khi Hamming distance <= 5 (đặc thù Shopee nhiều seller copy ảnh)
+PHASH_BOOST     = 0.15 # Boost nhẹ để không lấn át fusion score (giảm từ 0.3->0.15)
+
+print('✅ Cấu hình đã sẵn sàng!')
+print(f'   BASE_DIR      : {BASE_DIR}')
+print(f'   IMAGE_DIR     : {IMAGE_DIR}')
+print(f'   CANDIDATE_CSV : {CANDIDATE_CSV}')
+print(f'   PROCESSED_DIR : {PROCESSED_DIR}')
+print(f'   RESULTS_DIR   : {RESULTS_DIR}')
+print(f'   MODEL_NAME    : {SIGLIP_MODEL_NAME}')
+print(f'   BATCH_SIZE    : {BATCH_SIZE}')
+print(f'   IMG_SIZE      : {IMG_SIZE}')
+print(f'   SVD_DIM       : {SVD_DIM}')
+print(f'   TOP_K         : {TOP_K}  |  TOP_RERANK : {TOP_RERANK}')
+print(f'   PHASH_THRES   : {PHASH_THRESHOLD}  |  PHASH_BOOST : {PHASH_BOOST}')
+
+---
+# ============================================================
+# 🛠️  CÁC HÀM TIỆN ÍCH (HELPER FUNCTIONS)
+# ============================================================
+
+def l2_normalize(features: np.ndarray) -> np.ndarray:
+    """
+    Chuẩn hóa L2 cho ma trận features.
+    Mỗi hàng sẽ có norm = 1 sau khi chuẩn hóa.
+    """
+    norms = np.linalg.norm(features, axis=1, keepdims=True)
+    # Tránh chia cho 0
+    norms = np.where(norms < 1e-10, 1e-10, norms)
+    return (features / norms).astype(np.float32)
+
+
+def clean_text(text: str) -> str:
+    """
+    Làm sạch văn bản tiêu đề sản phẩm:
+    - Chuyển về chữ thường
+    - Giữ lại chữ cái (bao gồm Unicode), chữ số và khoảng trắng
+    - Loại bỏ khoảng trắng thừa
+    """
+    if not isinstance(text, str):
+        return ''
+    text = text.lower().strip()
+    # Giữ lại ký tự Latin, Unicode (tiếng Việt/Thái/v.v.), chữ số
+    text = re.sub(r'[^\w\s\u00C0-\u024F\u0E00-\u0E7F\u1E00-\u1EFF]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def hex_to_phash_array(hex_str) -> np.ndarray:
+    """
+    Chuyển chuỗi hex của pHash thành mảng bool (64 bits).
+    Dùng cho tính khoảng cách Hamming vectorized.
+    """
+    try:
+        phash_obj = imagehash.hex_to_hash(str(hex_str))
+        return phash_obj.hash.flatten()  # (64,) bool array
+    except Exception:
+        return np.zeros(64, dtype=bool)
+
+
+def compute_hamming_distances(query_hash: np.ndarray,
+                               candidate_hashes: np.ndarray) -> np.ndarray:
+    """
+    Tính khoảng cách Hamming vectorized giữa 1 query và nhiều candidates.
+
+    Args:
+        query_hash      : (64,) bool array — pHash của query
+        candidate_hashes: (N, 64) bool array — pHash của N candidates
+
+    Returns:
+        distances: (N,) int32 array — khoảng cách Hamming
+    """
+    return np.sum(query_hash != candidate_hashes, axis=1).astype(np.int32)
+
+
+def compute_map_at_k(queries_df: pd.DataFrame,
+                     gallery_df: pd.DataFrame,
+                     top_indices: np.ndarray,
+                     k: int = 5) -> float:
+    """
+    Tính Mean Average Precision tại k (mAP@k) từ kết quả FAISS top-N.
+
+    Args:
+        queries_df  : DataFrame query (cột: posting_id, label_group)
+        gallery_df  : DataFrame gallery (cột: posting_id, label_group)
+        top_indices : (n_queries, N) — chỉ số gallery trả về bởi FAISS
+        k           : số kết quả xem xét
+
+    Returns:
+        map_score: float — giá trị mAP@k
+    """
+    gallery_pids    = gallery_df['posting_id'].values
+    gallery_labels  = gallery_df['label_group'].values
+
+    # Tiền tính: label_group -> số lượng trong gallery
+    label_counts = gallery_df['label_group'].value_counts().to_dict()
+
+    ap_scores = []
+    queries_iter = queries_df.reset_index(drop=True)
+
+    for q_idx in range(len(queries_iter)):
+        q_pid   = queries_iter.at[q_idx, 'posting_id']
+        q_label = queries_iter.at[q_idx, 'label_group']
+
+        # Số relevant items trong gallery (trừ chính query)
+        n_relevant = label_counts.get(q_label, 0) - 1
+        # Bỏ qua query không có ảnh liên quan trong gallery
+        # (không dùng max(...,1) vì sẽ làm sai metric)
+        if n_relevant <= 0:
+            continue
+
+        # Lấy top-k kết quả, loại bỏ self-match
+        retrieved_labels = []
+        for gidx in top_indices[q_idx]:
+            if gidx < 0:
+                break
+            if gallery_pids[gidx] != q_pid:
+                retrieved_labels.append(gallery_labels[gidx] == q_label)
+            if len(retrieved_labels) == k:
+                break
+
+        # Tính Average Precision
+        hits, precision_sum = 0, 0.0
+        for rank, is_relevant in enumerate(retrieved_labels):
+            if is_relevant:
+                hits += 1
+                precision_sum += hits / (rank + 1)
+
+        ap = precision_sum / min(n_relevant, k)
+        ap_scores.append(ap)
+
+    return float(np.mean(ap_scores)) if ap_scores else 0.0
+
+
+def compute_precision_at_1(queries_df: pd.DataFrame,
+                            gallery_df: pd.DataFrame,
+                            top_indices: np.ndarray) -> float:
+    """
+    Tính Precision@1: Tỷ lệ query có kết quả đầu tiên đúng nhãn.
+    """
+    gallery_pids   = gallery_df['posting_id'].values
+    gallery_labels = gallery_df['label_group'].values
+    queries_iter   = queries_df.reset_index(drop=True)
+
+    correct = 0
+    for q_idx in range(len(queries_iter)):
+        q_pid   = queries_iter.at[q_idx, 'posting_id']
+        q_label = queries_iter.at[q_idx, 'label_group']
+
+        for gidx in top_indices[q_idx]:
+            if gidx < 0:
+                break
+            if gallery_pids[gidx] != q_pid:  # Bỏ self-match
+                if gallery_labels[gidx] == q_label:
+                    correct += 1
+                break
+
+    return correct / len(queries_iter)
+
+
+def compute_recall_at_k(queries_df: pd.DataFrame,
+                         gallery_df: pd.DataFrame,
+                         top_indices: np.ndarray,
+                         k: int = 5) -> float:
+    """
+    Tính Recall@k: Tỷ lệ trung bình relevant items được tìm thấy trong top-k.
+    """
+    gallery_pids   = gallery_df['posting_id'].values
+    gallery_labels = gallery_df['label_group'].values
+    label_counts   = gallery_df['label_group'].value_counts().to_dict()
+    queries_iter   = queries_df.reset_index(drop=True)
+
+    recall_scores = []
+    for q_idx in range(len(queries_iter)):
+        q_pid      = queries_iter.at[q_idx, 'posting_id']
+        q_label    = queries_iter.at[q_idx, 'label_group']
+        n_relevant = label_counts.get(q_label, 0) - 1
+        if n_relevant <= 0:
+            continue
+
+        hits = 0
+        count = 0
+        for gidx in top_indices[q_idx]:
+            if gidx < 0:
+                break
+            if gallery_pids[gidx] != q_pid:
+                if gallery_labels[gidx] == q_label:
+                    hits += 1
+                count += 1
+            if count == k:
+                break
+
+        recall = hits / min(n_relevant, k)
+        recall_scores.append(recall)
+
+    return float(np.mean(recall_scores)) if recall_scores else 0.0
+
+
+def build_faiss_index(gallery_features: np.ndarray,
+                       use_gpu: bool = False,
+                       gpu_resources=None) -> faiss.Index:
+    """
+    Xây dựng FAISS IndexFlatIP từ gallery features đã L2-normalize.
+
+    Args:
+        gallery_features: (N, D) float32 array đã chuẩn hóa L2
+        use_gpu         : Có dùng GPU FAISS không
+        gpu_resources   : faiss.StandardGpuResources nếu dùng GPU
+
+    Returns:
+        index: FAISS index đã thêm gallery
+    """
+    dim   = gallery_features.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    if use_gpu and gpu_resources is not None:
+        index = faiss.index_cpu_to_gpu(gpu_resources, 0, index)
+    index.add(gallery_features.astype(np.float32))
+    return index
+
+
+print('✅ Đã định nghĩa xong tất cả hàm tiện ích!')
+print('   - l2_normalize()              : Chuẩn hóa L2 vectorized')
+print('   - clean_text()                : Làm sạch văn bản tiêu đề')
+print('   - hex_to_phash_array()        : Chuyển pHash hex → bool array')
+print('   - compute_hamming_distances() : Khoảng cách Hamming vectorized')
+print('   - compute_map_at_k()          : Tính mAP@k từ FAISS results')
+print('   - compute_precision_at_1()    : Tính Precision@1')
+print('   - compute_recall_at_k()       : Tính Recall@k')
+print('   - build_faiss_index()         : Xây FAISS IndexFlatIP')
+---
+---
+## 📊 Bước 1: Phân chia Validation / Test Set
+- **Gallery:** Toàn bộ 34,250 ảnh (không thay đổi)
+- **Val Set (20%):** Dùng để tune tham số α trong Grid Search
+- **Test Set (80%):** Chỉ dùng một lần duy nhất để báo cáo kết quả cuối
+- **Stratify:** Theo `label_group` để đảm bảo phân phối đồng đều
+---
+# ============================================================
+# 📊 BƯỚC 1: PHÂN CHIA DỮ LIỆU VALIDATION / TEST
+# ============================================================
+print('=' * 60)
+print('BƯỚC 1: PHÂN CHIA DỮ LIỆU VALIDATION / TEST')
+print('=' * 60)
+
+# --- 1.1: Tải file CSV chính ---
+print(f'\n📂 Đang tải dữ liệu từ: {CANDIDATE_CSV}')
+candidate_df = pd.read_csv(CANDIDATE_CSV)
+
+print(f'✅ Tải xong! Tổng số dòng: {len(candidate_df):,}')
+print(f'   Các cột: {list(candidate_df.columns)}')
+
+# Kiểm tra các cột bắt buộc
+required_cols = ['posting_id', 'image', 'label_group', 'title']
+missing_cols = [c for c in required_cols if c not in candidate_df.columns]
+if missing_cols:
+    raise ValueError(f'❌ Thiếu cột bắt buộc: {missing_cols}')
+print(f'   Kiểm tra cột bắt buộc: ✅ OK')
+
+# Thống kê cơ bản
+unique_labels = candidate_df['label_group'].nunique()
+avg_per_group = len(candidate_df) / unique_labels
+print(f'\n📊 Thống kê dữ liệu:')
+print(f'   Tổng số ảnh       : {len(candidate_df):,}')
+print(f'   Số label_group    : {unique_labels:,}')
+print(f'   TB ảnh/group      : {avg_per_group:.2f}')
+print(f'   Max ảnh/group     : {candidate_df["label_group"].value_counts().max()}')
+print(f'   Min ảnh/group     : {candidate_df["label_group"].value_counts().min()}')
+
+print('\n   Mẫu dữ liệu (5 dòng đầu):')
+display(candidate_df[required_cols + (['image_phash'] if 'image_phash' in candidate_df.columns else [])].head())
+
+# --- 1.2: Phân chia Validation / Test ---
+print('\n✂️  Đang phân chia dữ liệu (stratify theo label_group)...')
+print('   - Val Set  : 20% (dùng để tune tham số)')
+print('   - Test Set : 80% (CHỈ DÙNG ĐỂ ĐÁNH GIÁ CUỐI CÙNG)')
+
+val_query_df, test_query_df = train_test_split(
+    candidate_df,
+    test_size=0.8,
+    random_state=42,
+)
+
+# Reset index để tránh lỗi khi dùng .at[]
+val_query_df  = val_query_df.reset_index(drop=True)
+test_query_df = test_query_df.reset_index(drop=True)
+
+# --- 1.3: Lưu kết quả phân chia ---
+val_csv_path  = os.path.join(RESULTS_DIR, 'val_query.csv')
+test_csv_path = os.path.join(RESULTS_DIR, 'test_query.csv')
+val_query_df.to_csv(val_csv_path, index=False)
+test_query_df.to_csv(test_csv_path, index=False)
+
+# --- 1.4: In kết quả ---
+print(f'\n✅ PHÂN CHIA HOÀN TẤT!')
+print(f'   📁 Gallery (toàn bộ)  : {len(candidate_df):,} ảnh  (100%)')
+print(f'   📁 Validation Set     : {len(val_query_df):,} ảnh  (20%)  → Lưu tại: val_query.csv')
+print(f'   📁 Test Set           : {len(test_query_df):,} ảnh  (80%)  → Lưu tại: test_query.csv')
+
+# Kiểm tra stratification
+val_labels  = val_query_df['label_group'].nunique()
+test_labels = test_query_df['label_group'].nunique()
+print(f'\n📊 Kiểm tra Stratification:')
+print(f'   Label groups trong Val Set  : {val_labels:,}')
+print(f'   Label groups trong Test Set : {test_labels:,}')
+print(f'   Label groups trong Gallery  : {unique_labels:,}')
+
+print(f'\n⚠️  NHẮC NHỞ QUAN TRỌNG:')
+print(f'   ✅ Bước 4 (Grid Search α) → CHỈ DÙNG val_query.csv')
+print(f'   ✅ Bước 5 (Đánh giá cuối) → CHỈ DÙNG test_query.csv — TUYỆT ĐỐI KHÔNG TUNE!')
+---
+---
+## 🦉 Bước 2: Trích xuất đặc trưng SigLIP (1152-dim)
+- Load `google/siglip-so400m-patch14-224` từ Hugging Face `transformers`
+- Trích xuất đặc trưng hình ảnh thông qua `SiglipVisionModel`
+- Output: 1152 chiều (khác ResNet50 là 2048 chiều)
+- Lưu vào `processed_features/siglip_features.npy`
+
+---
+# ============================================================
+# 🦉 BƯỚC 2: TRÍCH XUẤT ĐẶC TRƯNG SigLIP (1152 chiều)
+# ============================================================
+print('=' * 60)
+print('BƯỚC 2: TRÍCH XUẤT ĐẶC TRƯNG SigLIP (VISION EMBEDDINGS)')
+print('=' * 60)
+
+# --- 2.1: Custom Dataset cho Shopee ---
+class ShopeeImageDataset(Dataset):
+    """
+    Dataset tùy chỉnh để tải ảnh Shopee cho SigLIP.
+    Tự động xử lý ảnh lỗi bằng cách trả về ảnh đen.
+    """
+    def __init__(self, image_dir: str, image_filenames: list, transform=None):
+        self.image_dir       = image_dir
+        self.image_filenames = image_filenames
+        self.transform       = transform
+
+    def __len__(self) -> int:
+        return len(self.image_filenames)
+
+    def __getitem__(self, idx: int):
+        img_path = os.path.join(self.image_dir, self.image_filenames[idx])
+        try:
+            img = Image.open(img_path).convert('RGB')
+        except Exception:
+            # Nếu không mở được ảnh → trả về ảnh xám đặc
+            img = Image.new('RGB', (IMG_SIZE, IMG_SIZE), (128, 128, 128))
+        if self.transform:
+            img = self.transform(img)
+        return img, idx
+
+
+# --- 2.2: Transform theo chuẩn SigLIP (mean/std = 0.5) ---
+siglip_transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE), interpolation=transforms.InterpolationMode.BICUBIC),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.5, 0.5, 0.5],  # SigLIP mean
+        std=[0.5, 0.5, 0.5]    # SigLIP std
+    ),
+])
+
+print('✅ Đã tạo ShopeeImageDataset và Transform cho SigLIP!')
+
+---
+# --- 2.3: Load mô hình SigLIP từ Hugging Face ---
+from transformers import SiglipVisionModel
+
+print(f'🔄 Đang tải mô hình SigLIP ({SIGLIP_MODEL_NAME}) từ Hugging Face...')
+print('   (Lần đầu tiên có thể mất 2-5 phút để tải weights...)')
+
+siglip_model = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_NAME)
+siglip_model = siglip_model.to(device)
+siglip_model.eval()
+
+# --- 2.4: Xác nhận số chiều output ---
+print('\n🔍 Kiểm tra số chiều output...')
+with torch.no_grad():
+    dummy_input = torch.randn(2, 3, IMG_SIZE, IMG_SIZE).to(device)
+    test_output = siglip_model(dummy_input)
+
+# Lấy số chiều output từ pooler_output
+embed_dim = test_output.pooler_output.shape[-1]
+print(f'   Output shape : {test_output.pooler_output.shape}')
+print(f'   Feature dim  : {embed_dim}')
+
+print(f'\n✅ Mô hình SigLIP đã sẵn sàng!')
+print(f'   Kiến trúc    : {SIGLIP_MODEL_NAME}')
+print(f'   Số chiều ảnh : {embed_dim}')
+print(f'   Thiết bị     : {next(siglip_model.parameters()).device}')
+
+# Tự động lấy cấu hình dự kiến dựa trên tên mô hình
+expected_dim = siglip_model.config.hidden_size
+assert embed_dim == expected_dim, f'❌ LỖI: Số chiều phải là {expected_dim}, nhưng nhận được {embed_dim}!'
+print(f'   Kiểm tra {expected_dim}-dim: ✅ PASS')
+
+---
+# --- 2.5: Hàm trích xuất SigLIP features ---
+def extract_siglip_features(image_dir: str,
+                            image_filenames: list,
+                            model,
+                            transform,
+                            batch_size: int = 64) -> np.ndarray:
+    """
+    Trích xuất SigLIP vision features cho toàn bộ danh sách ảnh.
+
+    Args:
+        image_dir       : Thư mục chứa ảnh
+        image_filenames : Danh sách tên file ảnh
+        model           : Mô hình SigLIP (đã .eval() và .to(device))
+        transform       : Transforms tiền xử lý
+        batch_size      : Kích thước batch
+
+    Returns:
+        features: numpy array shape (N, embed_dim) — Image features
+    """
+    dataset    = ShopeeImageDataset(image_dir, image_filenames, transform)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+        shuffle=False,
+        drop_last=False
+    )
+
+    all_features = []
+    model.eval()
+
+    with torch.no_grad():
+        for batch_imgs, _ in tqdm(dataloader, desc='   Trích xuất SigLIP', unit='batch'):
+            batch_imgs = batch_imgs.to(device, non_blocking=True)
+
+            # Forward pass
+            output = model(batch_imgs)
+
+            # Dung pooler_output (CLS token) - dung voi SigLIP architecture
+            # SigLIP duoc train voi CLS-based contrastive loss -> pooler_output la feature tot nhat
+            img_features = output.pooler_output  # (B, hidden_size)
+
+            all_features.append(img_features.cpu().float().numpy())
+
+    return np.vstack(all_features).astype(np.float32)
+
+
+# --- 2.6: Trích xuất (hoặc tải cache nếu đã có) ---
+siglip_save_path = os.path.join(PROCESSED_DIR, 'siglip_features.npy')
+
+if os.path.exists(siglip_save_path):
+    print(f'\n📦 Tìm thấy file cache: {siglip_save_path}')
+    print('   Đang tải features đã lưu...')
+    siglip_features = np.load(siglip_save_path)
+    print(f'✅ Đã tải xong! Shape: {siglip_features.shape}')
+else:
+    print(f'\n🚀 Bắt đầu trích xuất SigLIP features cho {len(candidate_df):,} ảnh...')
+    print(f'   Batch size    : {BATCH_SIZE}')
+    print(f'   Số batch      : {len(candidate_df) // BATCH_SIZE + 1}')
+    print(f'   Ước tính thời gian: {len(candidate_df) / BATCH_SIZE * 0.5 / 60:.1f} phút (T4 GPU)')
+
+    start_time = time.time()
+
+    siglip_features = extract_siglip_features(
+        IMAGE_DIR,
+        candidate_df['image'].tolist(),
+        siglip_model,
+        siglip_transform,
+        batch_size=BATCH_SIZE
+    )
+
+    elapsed = time.time() - start_time
+    print(f'\n✅ Trích xuất hoàn tất!')
+    print(f'   Shape     : {siglip_features.shape}')
+    print(f'   Thời gian : {elapsed:.1f}s ({elapsed/60:.1f} phút)')
+    print(f'   Tốc độ    : {len(candidate_df)/elapsed:.0f} ảnh/giây')
+
+    # Lưu features
+    np.save(siglip_save_path, siglip_features)
+    file_size_mb = os.path.getsize(siglip_save_path) / 1e6
+    print(f'\n💾 Đã lưu features tại: {siglip_save_path} ({file_size_mb:.1f} MB)')
+
+# --- 2.7: Kiểm tra và thống kê ---
+assert siglip_features.shape == (len(candidate_df), embed_dim), \
+    f'❌ Shape không đúng: {siglip_features.shape} != ({len(candidate_df)}, {embed_dim})'
+
+print(f'\n📊 Thống kê SigLIP Features:')
+print(f'   Shape   : {siglip_features.shape}  ← (N_ảnh, {embed_dim}_chiều)')
+print(f'   Dtype   : {siglip_features.dtype}')
+print(f'   Min/Max : [{siglip_features.min():.4f}, {siglip_features.max():.4f}]')
+print(f'   Mean    : {siglip_features.mean():.4f}')
+print(f'   Std     : {siglip_features.std():.4f}')
+print(f'   Kiểm tra {embed_dim}-dim: ✅ PASS')
+
+---
+---
+## 📝 Bước 3: Trích xuất đặc trưng TF-IDF (256-dim sau SVD)
+- Làm sạch văn bản tiêu đề (lowercase, bỏ ký tự đặc biệt)
+- `TfidfVectorizer` với 30,000 từ, bigram, sublinear TF
+- `TruncatedSVD` (LSA) để giảm xuống 256 chiều
+- Lưu vào `processed_features/tfidf_features.npy`
+---
+# ============================================================
+# 📝 BƯỚC 3: TRÍCH XUẤT ĐẶC TRƯNG TF-IDF + SVD
+# ============================================================
+print('=' * 60)
+print('BƯỚC 3: TRÍCH XUẤT ĐẶC TRƯNG TF-IDF (256-dim sau SVD)')
+print('=' * 60)
+
+# --- 3.1: Làm sạch văn bản tiêu đề ---
+print('\n🧹 Đang làm sạch văn bản tiêu đề sản phẩm...')
+candidate_df['title_clean'] = candidate_df['title'].apply(clean_text)
+
+# Thống kê độ dài văn bản
+title_lengths = candidate_df['title_clean'].str.split().str.len()
+print(f'✅ Đã làm sạch {len(candidate_df):,} tiêu đề!')
+print(f'   Độ dài TB (từ): {title_lengths.mean():.1f}')
+print(f'   Độ dài Max     : {title_lengths.max()}')
+print(f'   Độ dài Min     : {title_lengths.min()}')
+print(f'\n   Ví dụ làm sạch:')
+print(f'   Trước: "{candidate_df["title"].iloc[0]}"')
+print(f'   Sau  : "{candidate_df["title_clean"].iloc[0]}"')
+
+# --- 3.2: TF-IDF Vectorizer ---
+tfidf_save_path = os.path.join(PROCESSED_DIR, 'tfidf_features.npy')
+
+if os.path.exists(tfidf_save_path):
+    print(f'\n📦 Tìm thấy file cache TF-IDF: {tfidf_save_path}')
+    tfidf_features = np.load(tfidf_save_path)
+    print(f'✅ Đã tải xong! Shape: {tfidf_features.shape}')
+    # Kiem tra va normalize lai neu cache cu chua normalize
+    _check_norms = np.linalg.norm(tfidf_features[:100], axis=1)
+    if not np.allclose(_check_norms, 1.0, atol=0.05):
+        print('   Cache TF-IDF chua normalize, dang chuan hoa...')
+        _n = np.linalg.norm(tfidf_features, axis=1, keepdims=True)
+        tfidf_features = (tfidf_features / np.maximum(_n, 1e-10)).astype(np.float32)
+        np.save(tfidf_save_path, tfidf_features)
+        print('   Da normalize va luu lai cache!')
+else:
+    print('\n🔄 Đang chạy TF-IDF Vectorizer...')
+    # Sửa lại hàm TfidfVectorizer trong code của đại ca thành y xì như vầy:
+    tfidf_vectorizer = TfidfVectorizer(
+        max_features=30000,
+        analyzer='char_wb',       # <-- ĐỔI SANG CHAR_WB (Cực kỳ quan trọng)
+        ngram_range=(3, 5),       # <-- Tìm các cụm từ 3 đến 5 ký tự
+        sublinear_tf=True,
+        min_df=2,
+        max_df=0.95,
+        strip_accents='unicode'
+)
+
+    tfidf_sparse = tfidf_vectorizer.fit_transform(candidate_df['title_clean'])
+    print(f'✅ TF-IDF Sparse Matrix: {tfidf_sparse.shape}')
+    print(f'   Kích thước từ điển : {len(tfidf_vectorizer.vocabulary_):,} từ/cụm từ')
+    print(f'   Mật độ sparse      : {tfidf_sparse.nnz / (tfidf_sparse.shape[0] * tfidf_sparse.shape[1]):.6f}')
+
+    # --- 3.3: Giảm chiều bằng TruncatedSVD (LSA) ---
+    print(f'\n🔄 Đang giảm chiều bằng TruncatedSVD ({SVD_DIM} chiều)...')
+    svd_model = TruncatedSVD(
+        n_components=SVD_DIM,
+        n_iter=10,
+        random_state=42
+    )
+
+    tfidf_features = svd_model.fit_transform(tfidf_sparse).astype(np.float32)
+
+    explained_var = svd_model.explained_variance_ratio_.sum()
+    print(f'✅ Sau TruncatedSVD: {tfidf_features.shape}')
+    print(f'   Tỷ lệ phương sai giải thích: {explained_var:.4f} ({explained_var*100:.2f}%)')
+
+    # L2-normalize TF-IDF features truoc khi luu (fix bug quan trong!)
+    _norms = np.linalg.norm(tfidf_features, axis=1, keepdims=True)
+    tfidf_features = (tfidf_features / np.maximum(_norms, 1e-10)).astype(np.float32)
+
+    # Lưu features
+    np.save(tfidf_save_path, tfidf_features)
+    file_size_mb = os.path.getsize(tfidf_save_path) / 1e6
+    print(f'\n💾 Đã lưu TF-IDF features tại: {tfidf_save_path} ({file_size_mb:.1f} MB)')
+
+# --- 3.4: Kiểm tra ---
+assert tfidf_features.shape == (len(candidate_df), SVD_DIM), \
+    f'❌ Shape TF-IDF không đúng: {tfidf_features.shape}'
+
+print(f'\n📊 Thống kê TF-IDF Features:')
+print(f'   Shape   : {tfidf_features.shape}  ← (N_ảnh, {SVD_DIM}_chiều_SVD)')
+print(f'   Dtype   : {tfidf_features.dtype}')
+print(f'   Min/Max : [{tfidf_features.min():.4f}, {tfidf_features.max():.4f}]')
+print(f'   Mean    : {tfidf_features.mean():.4f}')
+print(f'   Kiểm tra {SVD_DIM}-dim: ✅ PASS')
+
+# --- 3.5: Tổng kết features ---
+print(f'\n📦 TÓM TẮT CÁC FEATURES ĐÃ TRÍCH XUẤT:')
+print(f'   SigLIP  : {siglip_features.shape}  (ảnh, {siglip_features.shape[1]}-dim features)')
+print(f'   TF-IDF  : {tfidf_features.shape}  (văn bản, {SVD_DIM}-dim LSA)')
+print(f'   Khi fusion (α=0.7): [{0.7}×{siglip_features.shape[1]} | {0.3}×{SVD_DIM}] → concat → L2 → dim={siglip_features.shape[1]+SVD_DIM}')
+
+---
+---
+## 🔍 Bước 4: Grid Search tham số α trên Validation Set
+- Chỉ dùng `val_query.csv` (20% dữ liệu)
+- Tìm kiếm α từ 0.50 đến 0.90, bước 0.05
+- **Công thức fusion:** `[α×L2(SigLIP) | (1-α)×L2(TF-IDF)]` → L2 normalize → FAISS IndexFlatIP
+- Chọn `BEST_ALPHA` có `val_mAP@5` cao nhất
+
+---
+# ============================================================
+# 🔍 BƯỚC 4: GRID SEARCH α TRÊN VALIDATION SET
+# ============================================================
+print('=' * 60)
+print('BƯỚC 4: GRID SEARCH α — WEIGHTED LATE FUSION (VAL SET)')
+print('=' * 60)
+
+# --- 4.1: Khởi tạo FAISS GPU Resources (nếu có) ---
+USE_GPU_FAISS = torch.cuda.is_available()
+gpu_resources = None
+if USE_GPU_FAISS:
+    try:
+        gpu_resources = faiss.StandardGpuResources()
+        gpu_resources.setTempMemory(512 * 1024 * 1024)  # 512MB temp
+        print('✅ FAISS GPU Resources khởi tạo thành công!')
+    except Exception as e:
+        print(f'⚠️  FAISS GPU thất bại ({e}), dùng CPU thay thế.')
+        USE_GPU_FAISS = False
+else:
+    print('⚠️  Không có GPU — dùng FAISS CPU (chậm hơn).')
+
+# --- 4.2: Tiền tính L2-normalized components (dùng lại cho mỗi alpha) ---
+print('\n🔄 Đang tiền tính L2-normalized gallery features...')
+gallery_img_norm = l2_normalize(siglip_features.astype(np.float32))  # (N, siglip_features.shape[1])
+gallery_txt_norm = l2_normalize(tfidf_features.astype(np.float32))   # (N, 256)
+print(f'✅ Gallery image norm : {gallery_img_norm.shape}')
+print(f'   Gallery text  norm : {gallery_txt_norm.shape}')
+
+# --- 4.3: Lấy chỉ số val queries trong gallery ---
+print('\n🔄 Đang lấy chỉ số Val Queries trong Gallery...')
+posting_id_to_gidx = {
+    pid: idx for idx, pid in enumerate(candidate_df['posting_id'])
+}
+
+# Đảm bảo tất cả val query đều có trong gallery
+missing_pids = [pid for pid in val_query_df['posting_id'] if pid not in posting_id_to_gidx]
+if missing_pids:
+    print(f'⚠️  {len(missing_pids)} posting_id trong val không có trong gallery!')
+else:
+    print('   Kiểm tra tính đầy đủ: ✅ OK — tất cả val queries đều có trong gallery')
+
+val_gallery_indices = np.array(
+    [posting_id_to_gidx[pid] for pid in val_query_df['posting_id']],
+    dtype=np.int64
+)
+
+# Trích xuất normalized features của val queries
+val_img_norm = gallery_img_norm[val_gallery_indices]  # (n_val, 1024)
+val_txt_norm = gallery_txt_norm[val_gallery_indices]  # (n_val, 256)
+
+print(f'   Số val queries    : {len(val_query_df):,}')
+print(f'   Val img features  : {val_img_norm.shape}')
+print(f'   Val text features : {val_txt_norm.shape}')
+
+---
+# --- 4.4: Vòng lặp Grid Search ---
+alphas = np.arange(0.30, 0.96, 0.05)  # [0.30, 0.35, ..., 0.95] - mo rong de tim alpha tot nhat
+print(f'🔍 Bắt đầu Grid Search với {len(alphas)} giá trị alpha:')
+print(f'   Dải alpha: {[round(a, 2) for a in alphas]}')
+print(f'   Công thức: fused = L2( α×L2(SigLIP) || (1-α)×L2(TF-IDF) )')
+print(f'   Metric   : mAP@5 trên {len(val_query_df):,} val queries')
+print()
+
+best_alpha    = None
+best_val_map  = -1.0
+grid_results  = []  # Lưu lịch sử tìm kiếm
+
+# Số kết quả tìm kiếm: TOP_K + buffer (để loại self-match)
+n_search = TOP_K + 25  # Lấy top-30 để đảm bảo có đủ sau khi loại self-match (tăng buffer)
+
+start_grid = time.time()
+
+for i, alpha in enumerate(alphas):
+    alpha = round(float(alpha), 4)
+    beta  = round(1.0 - alpha, 4)
+
+    # ── Xây dựng gallery fusion features ──
+    gallery_fused = l2_normalize(
+        np.concatenate([alpha * gallery_img_norm, beta * gallery_txt_norm], axis=1)
+    )  # (N, embed_dim+SVD_DIM)
+
+    # ── Xây dựng FAISS Index ──
+    faiss_index = build_faiss_index(gallery_fused, USE_GPU_FAISS, gpu_resources)
+
+    # ── Tạo val query fusion features ──
+    val_fused = l2_normalize(
+        np.concatenate([alpha * val_img_norm, beta * val_txt_norm], axis=1)
+    )  # (n_val, embed_dim+SVD_DIM)
+
+    # ── Tìm kiếm FAISS ──
+    _, top_indices = faiss_index.search(val_fused.astype(np.float32), n_search)
+    # top_indices shape: (n_val, n_search)
+
+    # ── Tính mAP@5 ──
+    val_map5 = compute_map_at_k(val_query_df, candidate_df, top_indices, k=TOP_K)
+
+    # Ghi lại kết quả
+    grid_results.append({'alpha': alpha, 'beta': beta, 'val_mAP@5': val_map5})
+
+    # Đánh dấu tốt nhất
+    is_best = val_map5 > best_val_map
+    if is_best:
+        best_val_map  = val_map5
+        best_alpha    = alpha
+
+    # In kết quả mỗi bước
+    marker = ' ◀ TỐT NHẤT!' if is_best else ''
+    print(f'   α={alpha:.2f} (SigLIP:{alpha:.0%} | TF-IDF:{beta:.0%})'
+          f' → val mAP@5 = {val_map5:.4f}{marker}')
+
+    # Giải phóng bộ nhớ
+    del gallery_fused, val_fused, faiss_index
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+elapsed_grid = time.time() - start_grid
+
+# --- 4.5: Kết quả Grid Search ---
+print()
+print('=' * 60)
+print(f'✅ GRID SEARCH HOÀN TẤT! (Thời gian: {elapsed_grid:.1f}s)')
+print('=' * 60)
+print(f'\n   🏆 BEST_ALPHA = {best_alpha:.2f}')
+print(f'      SigLIP weight : {best_alpha:.0%}')
+print(f'      TF-IDF weight : {(1-best_alpha):.0%}')
+print(f'      Val mAP@5     : {best_val_map:.4f}')
+
+# Tạo bảng kết quả
+grid_df = pd.DataFrame(grid_results)
+grid_df['val_mAP@5'] = grid_df['val_mAP@5'].round(4)
+grid_df_sorted = grid_df.sort_values('val_mAP@5', ascending=False)
+
+print('\n📊 Bảng kết quả Grid Search (sắp xếp theo val mAP@5):')
+display(grid_df_sorted.reset_index(drop=True))
+
+# Lưu kết quả grid search
+grid_csv_path = os.path.join(RESULTS_DIR, 'grid_search_results.csv')
+grid_df.to_csv(grid_csv_path, index=False)
+print(f'\n💾 Đã lưu kết quả Grid Search tại: {grid_csv_path}')
+
+---
+# ============================================================
+# 🔍 BƯỜC 4B: GRID SEARCH PHASH_THRESHOLD TRÊN VALIDATION SET
+# ============================================================
+print('=' * 60)
+print('BƯỜC 4B: GRID SEARCH PHASH_THRESHOLD (VAL SET)')
+print('=' * 60)
+
+# Dùng BEST_ALPHA đã tìm được từ Bước 4A
+thresholds = [0, 3, 5, 8, 10, 15]
+boost_vals = [0.2, 0.3, 0.5]
+
+best_threshold     = PHASH_THRESHOLD  # Giữ mặc định nếu không có pHash
+best_boost         = PHASH_BOOST
+best_val_map_phash = -1.0
+
+# Tiền tính pHash arrays cho val set (nếu chưa có)
+HAS_PHASH_COL_4B = 'image_phash' in candidate_df.columns
+
+if HAS_PHASH_COL_4B:
+    # Tải hoặc tạo pHash arrays
+    phash_cache_path_4b = os.path.join(PROCESSED_DIR, 'phash_arrays.npy')
+    if os.path.exists(phash_cache_path_4b):
+        gallery_phash_arrays_4b = np.load(phash_cache_path_4b)
+        print(f'✅ Tải pHash cache! Shape: {gallery_phash_arrays_4b.shape}')
+    else:
+        phash_list_4b = [
+            hex_to_phash_array(h)
+            for h in tqdm(candidate_df['image_phash'], desc='   Chuyển pHash')
+        ]
+        gallery_phash_arrays_4b = np.array(phash_list_4b, dtype=bool)
+        np.save(phash_cache_path_4b, gallery_phash_arrays_4b)
+        print(f'✅ Tạo pHash arrays! Shape: {gallery_phash_arrays_4b.shape}')
+
+    print(f'\nĐang thử {len(thresholds)} threshold x {len(boost_vals)} boost values...')
+    print(f'   Sử dụng BEST_ALPHA = {best_alpha:.2f} từ Bước 4A')
+
+    # Xây FAISS index một lần với best_alpha
+    best_beta_4b = round(1.0 - best_alpha, 4)
+    gallery_fused_4b = l2_normalize(
+        np.concatenate([
+            best_alpha  * gallery_img_norm,
+            best_beta_4b * gallery_txt_norm
+        ], axis=1)
+    )
+    val_index_4b = build_faiss_index(gallery_fused_4b, USE_GPU_FAISS, gpu_resources)
+
+    # Query features val set
+    val_fused_4b = l2_normalize(
+        np.concatenate([
+            best_alpha  * gallery_img_norm[val_gallery_indices],
+            best_beta_4b * gallery_txt_norm[val_gallery_indices]
+        ], axis=1)
+    )
+
+    # FAISS search trước — dùng lại cho mọi threshold
+    val_top_scores_4b, val_top_raw_4b = val_index_4b.search(
+        val_fused_4b.astype(np.float32), TOP_RERANK + 5
+    )
+    gallery_pids_4b = candidate_df['posting_id'].values
+    n_val_4b = len(val_query_df)
+    val_query_reset_4b = val_query_df.reset_index(drop=True)
+
+    print()
+    for thresh in thresholds:
+        for boost in boost_vals:
+            val_reranked_4b = np.full((n_val_4b, TOP_K), -1, dtype=np.int64)
+
+            for q_idx in range(n_val_4b):
+                q_pid = val_query_reset_4b.at[q_idx, 'posting_id']
+                cands_gidx, cands_scores = [], []
+
+                for gidx, score in zip(val_top_raw_4b[q_idx], val_top_scores_4b[q_idx]):
+                    if gidx < 0: break
+                    if gallery_pids_4b[gidx] == q_pid: continue
+                    cands_gidx.append(gidx)
+                    cands_scores.append(float(score))
+                    if len(cands_gidx) == TOP_RERANK: break
+
+                if not cands_gidx: continue
+                cands_gidx   = np.array(cands_gidx, dtype=np.int64)
+                cands_scores = np.array(cands_scores, dtype=np.float32)
+
+                # pHash boost
+                q_gidx  = val_gallery_indices[q_idx]
+                q_phash = gallery_phash_arrays_4b[q_gidx]
+                ham     = compute_hamming_distances(q_phash, gallery_phash_arrays_4b[cands_gidx])
+                cands_scores[ham <= thresh] += boost
+
+                order = np.argsort(-cands_scores)[:TOP_K]
+                val_reranked_4b[q_idx] = cands_gidx[order]
+
+            val_map_4b = compute_map_at_k(val_query_df, candidate_df, val_reranked_4b, k=TOP_K)
+
+            is_best_4b = val_map_4b > best_val_map_phash
+            if is_best_4b:
+                best_val_map_phash = val_map_4b
+                best_threshold     = thresh
+                best_boost         = boost
+
+            marker_4b = ' ◄ TỐT NHẤT!' if is_best_4b else ''
+            print(f'   thresh={thresh:2d}, boost={boost:.1f} → val mAP@5={val_map_4b:.4f}{marker_4b}')
+
+    print(f'\n🏆 BEST pHash params: threshold={best_threshold}, boost={best_boost}')
+    print(f'   val mAP@5 = {best_val_map_phash:.4f}')
+
+    # Cập nhật tham số tối ưu để dùng ở Bước 5
+    PHASH_THRESHOLD = best_threshold
+    PHASH_BOOST     = best_boost
+    print(f'\n✅ Đã cập nhật: PHASH_THRESHOLD={PHASH_THRESHOLD}, PHASH_BOOST={PHASH_BOOST}')
+
+    # Dọn bộ nhớ
+    del gallery_fused_4b, val_fused_4b, val_index_4b
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+else:
+    print('⚠️  Không có cột image_phash → bỏ qua grid search threshold')
+    print(f'   Giữ mặc định: PHASH_THRESHOLD={PHASH_THRESHOLD}, PHASH_BOOST={PHASH_BOOST}')
+
+---
+---
+## 🏆 Bước 5: Đánh giá cuối cùng trên Test Set (Một lần duy nhất!)
+- Áp dụng `BEST_ALPHA` từ Bước 4
+- **pHash Boosting:** Truy xuất top-50, cộng điểm nếu pHash distance ≤ threshold
+- **Reranking:** Sắp xếp lại theo điểm đã boost, lấy top-5
+- Tính `mAP@5`, `Precision@1`, `Recall@5` trên **Test Set**
+- Lưu kết quả cuối vào `results/final_metrics.csv`
+
+> ⚠️ **CẢNH BÁO:** Ô này chỉ được chạy **MỘT LẦN DUY NHẤT** sau khi đã cố định BEST_ALPHA từ Bước 4!
+---
+# ============================================================
+# 🏆 BƯỚC 5: ĐÁNH GIÁ CUỐI CÙNG TRÊN TEST SET
+# ============================================================
+print('=' * 60)
+print('BƯỚC 5: ĐÁNH GIÁ CUỐI CÙNG — TEST SET + pHASH RERANKING')
+print('=' * 60)
+
+print(f'\n⚙️  Tham số sử dụng:')
+print(f'   BEST_ALPHA     = {best_alpha:.2f}  (từ Bước 4 Grid Search)')
+print(f'   PHASH_THRESHOLD = {PHASH_THRESHOLD}  (khoảng cách Hamming tối đa để boost)')
+print(f'   PHASH_BOOST     = {PHASH_BOOST}  (giá trị cộng thêm điểm số)')
+print(f'   TOP_RERANK      = {TOP_RERANK}  (số ứng viên trước khi rerank)')
+print(f'   TOP_K           = {TOP_K}  (số kết quả cuối cùng)')
+
+# --- 5.1: Chuẩn bị pHash arrays cho toàn bộ gallery ---
+HAS_PHASH_COL = 'image_phash' in candidate_df.columns
+
+if HAS_PHASH_COL:
+    print(f'\n🔄 Đang tiền tính pHash arrays cho {len(candidate_df):,} ảnh...')
+    phash_cache_path = os.path.join(PROCESSED_DIR, 'phash_arrays.npy')
+
+    if os.path.exists(phash_cache_path):
+        gallery_phash_arrays = np.load(phash_cache_path)
+        print(f'✅ Đã tải pHash cache! Shape: {gallery_phash_arrays.shape}')
+    else:
+        phash_list = [
+            hex_to_phash_array(h)
+            for h in tqdm(candidate_df['image_phash'], desc='   Chuyển pHash')
+        ]
+        gallery_phash_arrays = np.array(phash_list, dtype=bool)
+        np.save(phash_cache_path, gallery_phash_arrays)
+        print(f'✅ Đã tạo và lưu pHash arrays! Shape: {gallery_phash_arrays.shape}')
+else:
+    print('\n⚠️  Không tìm thấy cột "image_phash" trong CSV.')
+    print('   Bỏ qua pHash Boosting — chỉ dùng FAISS scores.')
+    gallery_phash_arrays = None
+---
+# --- 5.2: Xây dựng Gallery Index với BEST_ALPHA ---
+print(f'\n🔄 Xây dựng FAISS Index với BEST_ALPHA={best_alpha:.2f}...')
+
+best_beta = round(1.0 - best_alpha, 4)
+
+# Tính gallery fused features
+final_gallery_fused = l2_normalize(
+    np.concatenate([
+        best_alpha * gallery_img_norm,
+        best_beta  * gallery_txt_norm
+    ], axis=1)
+)  # (N, embed_dim+SVD_DIM)
+
+print(f'   Gallery fused shape : {final_gallery_fused.shape}')
+print(f'   Chiều fusion total  : {gallery_img_norm.shape[1]}×{best_alpha} + 256×{best_beta} → {gallery_img_norm.shape[1]+SVD_DIM} → L2')
+
+# Xây dựng FAISS index
+final_index = build_faiss_index(final_gallery_fused, USE_GPU_FAISS, gpu_resources)
+print(f'   FAISS Index type    : IndexFlatIP (Inner Product = Cosine sau L2)')
+print(f'   FAISS trên GPU      : {USE_GPU_FAISS}')
+print(f'✅ Đã xây dựng FAISS Index với {final_index.ntotal:,} gallery items!')
+
+# --- 5.3: Chuẩn bị Test Query Features ---
+print(f'\n🔄 Chuẩn bị Test Query Features...')
+test_gallery_indices = np.array(
+    [posting_id_to_gidx[pid] for pid in test_query_df['posting_id']],
+    dtype=np.int64
+)
+
+test_fused = l2_normalize(
+    np.concatenate([
+        best_alpha * gallery_img_norm[test_gallery_indices],
+        best_beta  * gallery_txt_norm[test_gallery_indices]
+    ], axis=1)
+)  # (n_test, embed_dim+SVD_DIM)
+
+print(f'   Số test queries     : {len(test_query_df):,}')
+print(f'   Test fused shape    : {test_fused.shape}')
+
+# --- 5.4: FAISS Search (top TOP_RERANK=50 để rerank) ---
+print(f'\n🔍 Đang tìm kiếm top-{TOP_RERANK} ứng viên cho {len(test_query_df):,} test queries...')
+start_search = time.time()
+
+top_scores_raw, top_indices_raw = final_index.search(
+    test_fused.astype(np.float32),
+    TOP_RERANK + 5  # Buffer thêm 5 để loại self-match
+)
+# top_scores_raw : (n_test, TOP_RERANK+5)
+# top_indices_raw: (n_test, TOP_RERANK+5)
+
+elapsed_search = time.time() - start_search
+print(f'✅ Tìm kiếm hoàn tất! Thời gian: {elapsed_search:.2f}s')
+print(f'   Tốc độ: {len(test_query_df)/elapsed_search:.0f} queries/giây')
+
+---
+# ============================================================
+# BUOC 5.4b: AVERAGE QUERY EXPANSION (AQE)
+# ============================================================
+# AQE: Mo rong query bang cach lay trung binh cua query + top-3 results
+# Giup tang recall dang ke ma khong can them du lieu
+print('=' * 60)
+print('BUOC 5.4b: AVERAGE QUERY EXPANSION (AQE)')
+print('=' * 60)
+
+AQE_K = 3   # So ket qua top de mo rong query
+# LUU Y: Neu vua doi mean_pooling -> pooler_output, phai xoa cache
+# siglip_features.npy va chay lai tu Buoc 2 de AQE hieu qua!
+DO_AQE = True  # Xem ghi chu ben duoi  # Dat False de tat AQE neu muon so sanh
+
+if DO_AQE:
+    print(f'\n[AQE] Dang ap dung AQE voi top-{AQE_K} results...')
+    print(f'   AQE: q_expanded = L2_Norm(q + mean(top_{AQE_K}_gallery_vecs))')
+
+    gallery_pids_aqe = candidate_df['posting_id'].values
+    n_test_aqe = len(test_query_df)
+    test_fused_expanded = test_fused.copy()  # (n_test, fused_dim)
+
+    expand_count = 0
+    qreset = test_query_df.reset_index(drop=True)
+
+    for q_idx in range(n_test_aqe):
+        q_pid = qreset.at[q_idx, 'posting_id']
+
+        # Thu thap top-AQE_K valid results (bo self-match)
+        neighbors = []
+        for gidx in top_indices_raw[q_idx]:
+            if gidx < 0:
+                break
+            if gallery_pids_aqe[gidx] == q_pid:
+                continue
+            neighbors.append(gidx)
+            if len(neighbors) == AQE_K:
+                break
+
+        if len(neighbors) == 0:
+            continue
+
+        # Lay fused vectors cua neighbors tu gallery
+        neighbor_vecs = final_gallery_fused[neighbors]  # (AQE_K, fused_dim)
+
+        # AQE: query moi = L2_Norm(query + mean(neighbors))
+        q_expanded = test_fused[q_idx] + neighbor_vecs.mean(axis=0)
+        q_norm = np.linalg.norm(q_expanded)
+        if q_norm > 1e-10:
+            test_fused_expanded[q_idx] = (q_expanded / q_norm).astype(np.float32)
+        expand_count += 1
+
+    print(f'[AQE] Hoan tat! Da mo rong {expand_count:,}/{n_test_aqe:,} queries')
+
+    # Search lai voi expanded queries
+    print(f'\n[AQE] Dang search lai voi expanded queries...')
+    top_scores_raw, top_indices_raw = final_index.search(
+        test_fused_expanded.astype(np.float32),
+        TOP_RERANK + 5
+    )
+    print(f'[AQE] Search hoan tat! top_indices_raw updated.')
+else:
+    print('[AQE] AQE bi tat (DO_AQE=False) - dung ket qua search goc')
+
+---
+# --- 5.5: pHash Boosting + Reranking ---
+print(f'\n🔄 Đang áp dụng pHash Boosting + Reranking...')
+print(f'   Ngưỡng Hamming  : <= {PHASH_THRESHOLD} → boost +{PHASH_BOOST}')
+print(f'   Số ứng viên     : top-{TOP_RERANK} (trước rerank)')
+print(f'   Kết quả cuối    : top-{TOP_K}')
+
+gallery_pids   = candidate_df['posting_id'].values
+n_test         = len(test_query_df)
+queries_reset  = test_query_df.reset_index(drop=True)
+
+# Ma trận lưu kết quả cuối: (n_test, TOP_K) gallery indices sau rerank
+final_top_indices = np.full((n_test, TOP_K), fill_value=-1, dtype=np.int64)
+
+for q_idx in tqdm(range(n_test), desc='   Reranking', unit='query'):
+    q_pid  = queries_reset.at[q_idx, 'posting_id']
+
+    # ── Bước A: Lấy top-50 ứng viên, loại self-match ──
+    candidates_gidx   = []
+    candidates_scores = []
+
+    for gidx, score in zip(top_indices_raw[q_idx], top_scores_raw[q_idx]):
+        if gidx < 0:
+            break
+        if gallery_pids[gidx] == q_pid:
+            continue  # Loại self-match
+        candidates_gidx.append(gidx)
+        candidates_scores.append(float(score))
+        if len(candidates_gidx) == TOP_RERANK:
+            break
+
+    if not candidates_gidx:
+        continue
+
+    candidates_gidx   = np.array(candidates_gidx, dtype=np.int64)
+    candidates_scores = np.array(candidates_scores, dtype=np.float32)
+
+    # ── Bước B: pHash Boosting (nếu có pHash) ──
+    if gallery_phash_arrays is not None:
+        q_gidx    = test_gallery_indices[q_idx]
+        q_phash   = gallery_phash_arrays[q_gidx]          # (64,) bool
+        c_phashes = gallery_phash_arrays[candidates_gidx] # (n_cands, 64) bool
+
+        # Tính khoảng cách Hamming vectorized
+        ham_dists = compute_hamming_distances(q_phash, c_phashes)  # (n_cands,)
+
+        # Boost: cộng PHASH_BOOST vào điểm của candidates có khoảng cách <= threshold
+        boost_mask = ham_dists <= PHASH_THRESHOLD
+        candidates_scores[boost_mask] += PHASH_BOOST
+
+    # ── Bước C: Rerank theo điểm mới, lấy top-K ──
+    rerank_order       = np.argsort(-candidates_scores)[:TOP_K]
+    final_top_indices[q_idx] = candidates_gidx[rerank_order]
+
+print(f'✅ Reranking hoàn tất!')
+---
+# --- 5.6: Tính Final Metrics trên Test Set ---
+print(f'\n📊 Đang tính Final Metrics trên Test Set...')
+print('   (Đây là kết quả CHÍNH THỨC, chỉ chạy 1 lần)')
+
+final_map5    = compute_map_at_k(test_query_df, candidate_df, final_top_indices, k=5)
+final_prec1   = compute_precision_at_1(test_query_df, candidate_df, final_top_indices)
+final_recall5 = compute_recall_at_k(test_query_df, candidate_df, final_top_indices, k=5)
+
+# --- 5.7: So sánh với baseline Tuần 3 ---
+BASELINE_MAP5    = 0.7635
+# LƯU Ý: Baseline tuần 3 đánh giá trên TOÀN BỘ 34,250 ảnh làm query
+# Tuần 4 chỉ đánh giá trên TEST SET (80%) → Không so sánh trực tiếp được
+print("⚠️  LƯU Ý: Baseline T3 dùng toàn bộ query, T4 chỉ dùng Test Set (80%)")
+print("   → Để so sánh công bằng, cần chạy ResNet50 T3 trên cùng Test Set này")
+BASELINE_PREC1   = None  # Không có baseline cho P@1
+BASELINE_RECALL5 = None  # Không có baseline cho R@5
+TARGET_MAP5      = 0.80
+
+improvement = final_map5 - BASELINE_MAP5
+target_met  = final_map5 >= TARGET_MAP5
+
+print()
+print('╔══════════════════════════════════════════════════════╗')
+print('║         🏆 KẾT QUẢ CUỐI CÙNG — TUẦN 4              ║')
+print('╠══════════════════════════════════════════════════════╣')
+print(f'║  Test Set          : {len(test_query_df):,} queries (80%)            ║')
+print(f'║  BEST_ALPHA        : {best_alpha:.2f} (SigLIP:{best_alpha:.0%} | TF-IDF:{best_beta:.0%})  ║')
+print(f'║  pHash Boost       : Threshold={PHASH_THRESHOLD}, Boost={PHASH_BOOST}              ║')
+print('╠══════════════════════════════════════════════════════╣')
+print(f'║  mAP@5             : {final_map5:.4f}                          ║')
+print(f'║  Precision@1       : {final_prec1:.4f}                          ║')
+print(f'║  Recall@5          : {final_recall5:.4f}                          ║')
+print('╠══════════════════════════════════════════════════════╣')
+print(f'║  Baseline (T3)     : {BASELINE_MAP5:.4f}  (ResNet50)            ║')
+print(f'║  Cải thiện         : {improvement:+.4f}  ({improvement/BASELINE_MAP5*100:+.2f}%)             ║')
+print(f'║  Mục tiêu >= 0.80  : {"✅ ĐẠT!" if target_met else "❌ CHƯA ĐẠT"}                         ║')
+print('╚══════════════════════════════════════════════════════╝')
+
+if target_met:
+    print(f'\n🎉 CHÚC MỪNG! Đã đạt mục tiêu mAP@5 >= 0.80!')
+    print(f'   Cải thiện {improvement:.4f} điểm ({improvement/BASELINE_MAP5*100:.2f}%) so với baseline ResNet50!')
+else:
+    gap = TARGET_MAP5 - final_map5
+    print(f'\n⚠️  Chưa đạt mục tiêu. Còn cách {gap:.4f} điểm.')
+    print('   Gợi ý: Thử SigLIP Large (google/siglip-large-patch16-384), điều chỉnh PHASH_THRESHOLD,')
+    print('          hoặc áp dụng Query Expansion.')
+
+---
+# --- 5.8: Lưu Final Metrics ra CSV ---
+final_metrics = {
+    'metric'         : ['mAP@5', 'Precision@1', 'Recall@5'],
+    'value'          : [final_map5, final_prec1, final_recall5],
+    'baseline_T3'    : [BASELINE_MAP5, None, None],
+    'improvement'    : [final_map5 - BASELINE_MAP5, None, None],
+    'target'         : [TARGET_MAP5, None, None],
+    'target_met'     : [target_met, None, None],
+}
+
+# Thêm metadata
+metadata = {
+    'metric'         : ['--METADATA--', 'best_alpha', 'phash_threshold',
+                        'phash_boost', 'top_rerank', 'top_k',
+                        'svd_dim', 'model_image', 'model_text',
+                        'n_gallery', 'n_val_queries', 'n_test_queries'],
+    'value'          : [None, best_alpha, PHASH_THRESHOLD,
+                        PHASH_BOOST, TOP_RERANK, TOP_K,
+                        SVD_DIM, SIGLIP_MODEL_NAME, 'TF-IDF+SVD',
+                        len(candidate_df), len(val_query_df), len(test_query_df)],
+    'baseline_T3'    : [None] * 12,
+    'improvement'    : [None] * 12,
+    'target'         : [None] * 12,
+    'target_met'     : [None] * 12,
+}
+
+metrics_df = pd.concat([
+    pd.DataFrame(final_metrics),
+    pd.DataFrame(metadata)
+], ignore_index=True)
+
+metrics_csv_path = os.path.join(RESULTS_DIR, 'final_metrics.csv')
+metrics_df.to_csv(metrics_csv_path, index=False)
+
+print(f'💾 Đã lưu kết quả cuối tại: {metrics_csv_path}')
+print()
+display(metrics_df.head(3))
+
+# --- 5.9: Tóm tắt tất cả các file đã tạo ---
+print('\n📁 DANH SÁCH FILE ĐÃ TẠO:')
+output_files = [
+    (os.path.join(PROCESSED_DIR, 'siglip_features.npy'),   f'SigLIP gallery features (N×{siglip_features.shape[1]})'),
+    (os.path.join(PROCESSED_DIR, 'tfidf_features.npy'),    'TF-IDF gallery features (N×256)'),
+    (os.path.join(PROCESSED_DIR, 'phash_arrays.npy'),      'pHash bool arrays (N×64)'),
+    (os.path.join(RESULTS_DIR,   'val_query.csv'),          'Validation query set (20%)'),
+    (os.path.join(RESULTS_DIR,   'test_query.csv'),         'Test query set (80%)'),
+    (os.path.join(RESULTS_DIR,   'grid_search_results.csv'),'Grid Search results (α sweep)'),
+    (os.path.join(RESULTS_DIR,   'final_metrics.csv'),      'Final evaluation metrics'),
+]
+
+for fpath, fdesc in output_files:
+    exists = os.path.exists(fpath)
+    size   = os.path.getsize(fpath) / 1e6 if exists else 0
+    status = f'✅ {size:.1f} MB' if exists else '❌ Chưa tạo'
+    print(f'   {status:15s}  {fdesc:40s}  {os.path.basename(fpath)}')
+
+---
+---
+## 📝 Tổng kết — Tuần 4
+
+### 🔧 Những gì đã thực hiện:
+
+| Bước | Nội dung | Chi tiết |
+|------|----------|----------|
+| **1** | Phân chia dữ liệu | `train_test_split(test_size=0.8, stratify=label_group)` |
+| **2** | SigLIP Features | `SiglipVisionModel.from_pretrained(SIGLIP_MODEL_NAME)` → vision features (1152-dim) |
+| **3** | TF-IDF Features | `TfidfVectorizer` → `TruncatedSVD(256)` |
+| **4** | Grid Search | α ∈ [0.50, 0.90] step 0.05 → Chọn `BEST_ALPHA` trên Val Set |
+| **5** | Đánh giá cuối | pHash Boost + Rerank Top-50→5 → Final mAP@5, P@1, R@5 trên Test Set |
+
+### 📊 Kết quả (điền vào sau khi chạy):
+
+| Metric | Tuần 3 (Baseline) | Tuần 4 (SigLIP) | Cải thiện |
+|--------|-------------------|-----------------|-----------|
+| **mAP@5** | 0.7635 | *(xem ô trên)* | *(xem ô trên)* |
+| **Precision@1** | N/A | *(xem ô trên)* | — |
+| **Recall@5** | N/A | *(xem ô trên)* | — |
+
+### 📌 Ghi chú cho Tuần 5 (nếu chưa đạt mục tiêu):
+- Thử `google/siglip-large-patch16-384` (1152-dim) thay vì `google/siglip-so400m-patch14-224`
+- Thêm **Query Expansion** (Average Query Expansion)
+- Điều chỉnh `PHASH_THRESHOLD` (thử 4, 8)
+- Thêm đặc trưng **Color Histogram** làm thành phần thứ 3 trong fusion
+
+---
+*Notebook: `Tuan4_GiaVy_SigLIP.ipynb` | Tác giả: Mã Gia Vỹ | Nhóm 3*

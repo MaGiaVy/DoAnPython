@@ -1,0 +1,380 @@
+
+---
+!pip install faiss-cpu
+---
+# Dữ liệu 
+import pandas as pd
+import numpy as np
+
+# Ảnh & PyTorch 
+import torch
+import torchvision.transforms as transforms
+from torchvision import models
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+
+# Tìm kiếm tương đồng
+import faiss
+from sklearn.metrics.pairwise import cosine_similarity
+
+# Vẽ biểu đồ 
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Tiện ích
+import os
+from tqdm import tqdm
+
+pd.set_option('display.max_columns', None) 
+pd.set_option('display.max_rows', 20)      
+plt.rcParams['figure.figsize'] = (10, 5)    
+sns.set_style('whitegrid')                  
+
+
+print('Import thư viện thành công!')
+print(f'PyTorch version : {torch.__version__}')
+# Kiểm tra máy có GPU không. GPU giúp chạy nhanh hơn CPU rất nhiều.
+# Laptop bình thường thường sẽ hiện 'cpu' – không sao, vẫn chạy được.
+print(f'Device: {"cuda" if torch.cuda.is_available() else "cpu"}')
+---
+DÙNG GG COLAB MƯỢN GPU T4
+---
+from google.colab import drive
+drive.mount('/content/drive')
+---
+import os
+
+# ĐƯỜNG DẪN ĐÚNG DỰA TRÊN ẢNH GOOGLE DRIVE CỦA BẠN:
+DATA_DIR = '/content/drive/MyDrive/DoAnPython/DuLieuPython'
+
+CSV_PATH = os.path.join(DATA_DIR, 'train.csv')
+# Vì 'train_images.zip' đang là file nén, bạn cứ khai báo đường dẫn tệp trước:
+IMAGE_ZIP_PATH = os.path.join(DATA_DIR, 'train_images.zip') 
+
+PROCESSED = '../data/processed/'
+RESULTS = '../results/'
+os.makedirs(PROCESSED, exist_ok=True)
+os.makedirs(RESULTS, exist_ok=True)
+
+# Kiểm tra lại đường dẫn
+for p in [CSV_PATH, IMAGE_ZIP_PATH]:
+    status = 'Đã tìm thấy tệp/thư mục' if os.path.exists(p) else 'Không tìm thấy – kiểm tra lại đường dẫn!'
+    print(f'{status}  {p}')
+---
+TIỀN XỬ LÝ DỮ LIỆU
+---
+class ShopeeDataset(Dataset):
+    def __init__(self, df, img_dir, transform):
+        self.df = df
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        try:
+            img_name = self.df.iloc[idx]['image']
+            img_path = os.path.join(self.img_dir, img_name)
+            image = self.transform(Image.open(img_path).convert("RGB"))
+        except Exception:
+            image = torch.zeros(3, 224, 224)
+            
+        text = str(self.df.iloc[idx]['title'])
+        text_token = clip.tokenize([text], truncate=True).squeeze(0)
+        return image, text_token
+---
+df = pd.read_csv(CSV_PATH)
+
+print(f'Train: {df.shape[0]:,} dòng x {df.shape[1]:,} cột')
+
+df.head()
+---
+df.info()
+---
+candidate_df = pd.read_csv(CSV_PATH)
+---
+!pip install sentence-transformers timm
+import torch
+from sentence_transformers import SentenceTransformer
+import timm
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+# Sửa đổi chuỗi tên định danh DINOv3 chuẩn xác trong thư viện timm
+dinov3_model = timm.create_model("vit_base_patch16_dinov3.lvd1689m", pretrained=True, num_classes=0).to(device)
+dinov3_model.eval()
+minilm_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+---
+TRÍCH XUẤT VECTO
+---
+!unzip -q /content/drive/MyDrive/DoAnPython/DuLieuPython/train_images.zip -d /content/train_images_extracted
+---
+import os
+import gc
+import numpy as np
+import pandas as pd
+from PIL import Image
+import torch
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
+from sentence_transformers import SentenceTransformer
+import timm
+
+csv_path = "/content/drive/MyDrive/DoAnPython/DuLieuPython/train.csv"
+image_folder = "/content/train_images_extracted/train_images"
+output_dir = "/content/drive/MyDrive/DoAnPython/DuLieuPython"
+
+# Đảm bảo thư mục đầu ra tồn tại
+os.makedirs(output_dir, exist_ok=True)
+
+candidate_df = pd.read_csv(csv_path)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# 1. Tải mô hình
+dinov3_model = timm.create_model("vit_base_patch16_dinov3.lvd1689m", pretrained=True, num_classes=0).to(device)
+dinov3_model.eval()
+
+# Tự động lấy cấu hình tiền xử lý ảnh chuẩn từ mô hình DINOv3
+data_config = timm.data.resolve_model_data_config(dinov3_model)
+dinov3_transform = timm.data.create_transform(**data_config, is_training=False)
+
+# 2. Xây dựng Dataset (Bỏ phần xử lý text bên trong để DataLoader chạy nhanh hơn)
+class ShopeeImageDataset(Dataset):
+    def __init__(self, df, img_dir, transform):
+        self.df = df
+        self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        img_name = self.df.iloc[idx]["image"]
+        img_path = os.path.join(self.img_dir, img_name)
+        try:
+            image = self.transform(Image.open(img_path).convert("RGB"))
+        except Exception:
+            # Fallback tạo tensor trống khớp chính xác kích thước yêu cầu của mô hình
+            image = torch.zeros(data_config['input_size'])
+        return image
+
+dataset = ShopeeImageDataset(candidate_df, image_folder, dinov3_transform)
+# Bật pin_memory=True để đẩy dữ liệu lên GPU nhanh hơn
+dataloader = DataLoader(dataset, batch_size=128, shuffle=False, num_workers=2, pin_memory=True)
+
+# 3. Trích xuất đặc trưng HÌNH ẢNH (DINOv3)
+image_features_list = []
+
+print("--- Đang trích xuất đặc trưng Hình ảnh (DINOv3) ---")
+for images in tqdm(dataloader):
+    images = images.to(device, non_blocking=True)
+    with torch.no_grad():
+        img_features = dinov3_model(images)
+    
+    # Chuẩn hóa L2 ngay trên GPU
+    img_features /= img_features.norm(dim=-1, keepdim=True)
+    
+    # Chuyển NGAY sang NumPy và ép kiểu float32 để giải phóng bộ nhớ PyTorch
+    image_features_list.append(img_features.cpu().numpy().astype(np.float32))
+
+# Gộp các mảng NumPy bằng cách concatenate trực tiếp (tiết kiệm RAM gấp đôi torch.cat)
+image_features = np.concatenate(image_features_list, axis=0)
+np.save(os.path.join(output_dir, "dinov3_image_features.npy"), image_features)
+
+# Xóa các biến không còn dùng tới để trả lại RAM/VRAM ngay lập tức
+del image_features_list, image_features, dinov3_model
+torch.cuda.empty_cache()
+gc.collect()
+
+# 4. Trích xuất đặc trưng VĂN BẢN (MiniLM)
+print("\n--- Đang trích xuất đặc trưng Văn bản (MiniLM) ---")
+minilm_model = SentenceTransformer("all-MiniLM-L6-v2", device=device)
+
+# Lấy trực tiếp từ DataFrame, xử lý giá trị khuyết (NaN) nếu có bằng fillna
+titles_to_encode = candidate_df["title"].fillna("").astype(str).tolist()
+
+text_features = minilm_model.encode(
+    titles_to_encode, 
+    batch_size=256, # Tăng batch_size cho văn bản để chạy nhanh hơn
+    show_progress_bar=True, 
+    convert_to_numpy=True
+).astype(np.float32)
+
+np.save(os.path.join(output_dir, "minilm_text_features.npy"), text_features)
+
+print("\nHoàn thành! Toàn bộ đặc trưng hình ảnh và văn bản đã được lưu an toàn.")
+---
+TÍNH TOÁN MA TRẬN TƯƠNG ĐỒNG
+---
+import os
+import gc  # Thêm thư viện giải phóng rác tự động
+import numpy as np
+import pandas as pd
+import torch
+from tqdm import tqdm
+
+csv_path = "/content/drive/MyDrive/DoAnPython/DuLieuPython/train.csv"
+output_dir = "/content/drive/MyDrive/DoAnPython/DuLieuPython"
+
+candidate_df = pd.read_csv(csv_path)
+dinov3_image_features = np.load(os.path.join(output_dir, "dinov3_image_features.npy")).astype('float32')
+minilm_text_features = np.load(os.path.join(output_dir, "minilm_text_features.npy")).astype('float32')
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+image_tensor = torch.tensor(dinov3_image_features).to(device)
+text_tensor = torch.tensor(minilm_text_features).to(device)
+
+# Chuẩn hóa L2
+image_norm = image_tensor / image_tensor.norm(dim=-1, keepdim=True)
+text_norm = text_tensor / text_tensor.norm(dim=-1, keepdim=True)
+
+phash_strings = candidate_df["image_phash"].values
+phash_ints = np.array([int(h, 16) for h in phash_strings], dtype=np.uint64)
+
+num_samples = len(candidate_df)
+BATCH_SIZE = 1024
+all_sorted_indices = []
+
+# ==================== CẤU HÌNH QUAN TRỌNG ====================
+# Thay vì lưu toàn bộ N x N thứ tự (gây tràn RAM), chỉ lấy Top K kết quả cao nhất.
+# Nếu bắt buộc phải lưu toàn bộ ma trận (không khuyến khích), hãy đặt TOP_K = None
+TOP_K = 50 
+# =============================================================
+
+torch.cuda.empty_cache()
+gc.collect()
+
+for start_idx in tqdm(range(0, num_samples, BATCH_SIZE)):
+    end_idx = min(start_idx + BATCH_SIZE, num_samples)
+    
+    # 1. Tính toán tương đồng trên GPU
+    img_sim_batch = torch.matmul(image_norm[start_idx:end_idx], image_norm.T)
+    txt_sim_batch = torch.matmul(text_norm[start_idx:end_idx], text_norm.T)
+    
+    # Kết hợp trọng số và đẩy NGAY về CPU dạng float32 để giải phóng GPU
+    sim_batch = (0.7 * img_sim_batch + 0.3 * txt_sim_batch).cpu().numpy().astype(np.float32)
+    
+    # Giải phóng biến GPU ngay lập tức
+    del img_sim_batch, txt_sim_batch
+    torch.cuda.empty_cache()
+    
+    # 2. Tối ưu tính Khoảng cách Hamming (Thuật toán Bit-twiddling song song siêu tốc)
+    batch_phash = phash_ints[start_idx:end_idx]
+    phash_diff = batch_phash[:, None] ^ phash_ints[None, :]
+    
+    # Đếm số bit 1 bằng toán tử bitwise thay vì chạy vòng lặp 64 lần
+    x = phash_diff
+    x = (x & 0x5555555555555555) + ((x >> 1) & 0x5555555555555555)
+    x = (x & 0x3333333333333333) + ((x >> 2) & 0x3333333333333333)
+    x = (x & 0x0F0F0F0F0F0F0F0F) + ((x >> 4) & 0x0F0F0F0F0F0F0F0F)
+    x = (x & 0x00FF00FF00FF00FF) + ((x >> 8) & 0x00FF00FF00FF00FF)
+    x = (x & 0x0000FFFF0000FFFF) + ((x >> 16) & 0x0000FFFF0000FFFF)
+    hamming_dist = ((x & 0x00000000FFFFFFFF) + (x >> 32)).astype(np.uint8)
+    
+    del phash_diff, x
+    
+    # 3. Cộng điểm trực tiếp (In-place) lên ma trận cũ, KHÔNG dùng np.where tạo bản sao mới
+    # Nếu khoảng cách <= 2 thì cộng thêm 0.5. Nếu bằng 0 (giống hệt) thì cộng thêm 0.5 nữa (tổng là 1.0)
+    sim_batch[hamming_dist <= 2] += 0.5
+    sim_batch[hamming_dist == 0] += 0.5
+    
+    del hamming_dist
+    
+    # 4. Sắp xếp và trích xuất chỉ mục (Ép kiểu về int32 để giảm 50% dung lượng RAM)
+    if TOP_K is not None:
+        # Chỉ lấy Top K phần tử lớn nhất, cắt bỏ phần thừa ngay lập tức để tiết kiệm bộ nhớ
+        sorted_indices = np.argsort(-sim_batch, axis=-1)[:, :TOP_K].astype(np.int32)
+    else:
+        sorted_indices = np.argsort(-sim_batch, axis=-1).astype(np.int32)
+        
+    all_sorted_indices.append(sorted_indices)
+    
+    del sim_batch
+    gc.collect() # Dọn dẹp bộ nhớ đệm CPU sau mỗi Batch
+
+# Gộp toàn bộ kết quả cực kỳ nhẹ nhàng
+all_sorted_indices = np.vstack(all_sorted_indices)
+np.save(os.path.join(output_dir, "all_sorted_indices.npy"), all_sorted_indices)
+
+print(f"Thành công! Đã xử lý và lưu file. Hình dạng ma trận đầu ra: {all_sorted_indices.shape}")
+---
+TÍNH TOÁN METRIC
+---
+import os
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+csv_path = "/content/drive/MyDrive/DoAnPython/DuLieuPython/train.csv"
+output_dir = "/content/drive/MyDrive/DoAnPython/DuLieuPython"
+
+candidate_df = pd.read_csv(csv_path)
+all_sorted_indices = np.load(os.path.join(output_dir, "all_sorted_indices.npy"))
+
+labels = candidate_df["label_group"].values
+group_to_indices = candidate_df["label_group"].groupby(candidate_df["label_group"]).indices
+num_samples = len(labels)
+
+ap5_scores = []
+p1, r1 = [], []
+p3, r3 = [], []
+p5, r5 = [], []
+p10, r10 = [], []
+
+for i in tqdm(range(num_samples)):
+    retrieved_indices = all_sorted_indices[i]
+    query_label = labels[i]
+    ground_truth_indices = group_to_indices[query_label]
+
+    retrieved_indices = retrieved_indices[retrieved_indices != i]
+    gt_without_self = ground_truth_indices[ground_truth_indices != i]
+    gt_len = len(gt_without_self)
+
+    if gt_len > 0:
+        is_relevant = np.isin(retrieved_indices, gt_without_self)
+        
+        h1 = is_relevant[:1].sum()
+        p1.append(h1 / 1)
+        r1.append(h1 / gt_len)
+
+        h3 = is_relevant[:3].sum()
+        p3.append(h3 / 3)
+        r3.append(h3 / gt_len)
+
+        h5 = is_relevant[:5].sum()
+        p5.append(h5 / 5)
+        r5.append(h5 / gt_len)
+
+        h10 = is_relevant[:10].sum()
+        p10.append(h10 / 10)
+        r10.append(h10 / gt_len)
+
+        is_relevant_5 = is_relevant[:5]
+        hit_positions = np.where(is_relevant_5)[0] + 1
+        if len(hit_positions) > 0:
+            hits_cum = np.arange(1, len(hit_positions) + 1)
+            ap_5 = np.sum(hits_cum / hit_positions) / min(5, gt_len)
+            ap5_scores.append(ap_5)
+        else:
+            ap5_scores.append(0.0)
+    else:
+        p1.append(0.0); r1.append(0.0)
+        p3.append(0.0); r3.append(0.0)
+        p5.append(0.0); r5.append(0.0)
+        p10.append(0.0); r10.append(0.0)
+        ap5_scores.append(0.0)
+
+summary_metrics = pd.DataFrame(
+    {
+        "K": [1, 3, 5, 10],
+        "Precision": [np.mean(p1), np.mean(p3), np.mean(p5), np.mean(p10)],
+        "Recall": [np.mean(r1), np.mean(r3), np.mean(r5), np.mean(r10)],
+    }
+)
+
+summary_metrics[["Precision", "Recall"]] = summary_metrics[["Precision", "Recall"]].round(4)
+map_at_5 = round(np.mean(ap5_scores), 4)
+
+print(summary_metrics.to_string(index=False))
+print(map_at_5)
