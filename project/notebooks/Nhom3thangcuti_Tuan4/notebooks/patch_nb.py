@@ -267,6 +267,6 @@ else:
 print(f'\nFinal total changes: {changes}/5')
 
 with open(NB_PATH, 'w', encoding='utf-8') as f:
-    json.dump(nb, f, ensure_ascii=False, indent=1)
+    json.dump(nb, f, ensure_ascii=True, indent=1)
 
 print('Notebook saved OK.')
