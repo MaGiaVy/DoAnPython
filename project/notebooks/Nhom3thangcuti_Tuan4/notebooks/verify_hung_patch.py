@@ -24,7 +24,7 @@ for i, c in enumerate(cells):
 
     if "paraphrase-multilingual-MiniLM-L12-v2" in src:
         checks["minilm_multilingual"] = True
-    if "gt_len == 0" in src and "continue" in src:
+    if ("gt_len == 0" in src or "gt_n == 0" in src or "len(gt) == 0" in src) and "continue" in src:
         checks["gt_len_continue"] = True
     if "alpha_grid" in src or "grid search" in src.lower():
         checks["grid_search_alpha"] = True
