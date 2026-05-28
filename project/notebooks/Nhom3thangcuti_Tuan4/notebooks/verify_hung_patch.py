@@ -9,7 +9,7 @@ print()
 
 # Kiểm tra các fix quan trọng
 checks = {
-    "minilm_multilingual": False,
+    "minilm_model":        False,
     "gt_len_continue":     False,
     "grid_search_alpha":   False,
     "val_test_split":      False,
@@ -22,8 +22,8 @@ for i, c in enumerate(cells):
     label = src[:80].replace("\n", " ")
     print(f"  [{i:02d}] {t:8s} | {label}")
 
-    if "paraphrase-multilingual-MiniLM-L12-v2" in src:
-        checks["minilm_multilingual"] = True
+    if "all-MiniLM-L6-v2" in src:
+        checks["minilm_model"] = True
     if ("gt_len == 0" in src or "gt_n == 0" in src or "len(gt) == 0" in src) and "continue" in src:
         checks["gt_len_continue"] = True
     if "alpha_grid" in src or "grid search" in src.lower():
