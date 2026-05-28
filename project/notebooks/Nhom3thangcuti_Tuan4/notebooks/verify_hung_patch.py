@@ -28,9 +28,9 @@ for i, c in enumerate(cells):
         checks["gt_len_continue"] = True
     if "alpha_grid" in src or "grid search" in src.lower():
         checks["grid_search_alpha"] = True
-    if "val_indices" in src and "test_indices" in src:
+    if "val_idx" in src and "test_idx" in src:
         checks["val_test_split"] = True
-    if "metrics_Hung_DINOv3" in src and ".csv" in src:
+    if "metrics_dinov3_minilm" in src and ".csv" in src:
         checks["save_csv_metric"] = True
 
 print()
