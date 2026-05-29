@@ -1,0 +1,7 @@
+﻿Phương pháp,Precision@1,Precision@3,Precision@5,Recall@1,Recall@3,Recall@5,mAP@5
+Baseline tuần 2 - ResNet50,0.6328,0.4362,0.3422,0.3022,0.4633,0.5293,0.5268
+Baseline pHash,0.3872,0.2514,0.1871,0.3872,0.3307,0.3118,0.2667
+Baseline TF-IDF,0.5922,0.4108,0.3313,0.5922,0.6001,0.6349,0.5204
+CLIP + TF-IDF,0.7265,0.4971,0.3866,0.3635,0.552,0.6195,0.6428
+Tuần 3 - DINOv2/ResNet + TF-IDF + pHash + reranking,0.7909,,0.4375,,,,0.7635
+Tuần 4 - Strong Fusion: Global + YOLO Crop + TF-IDF + pHash,0.7981,0.5574,0.441,0.4166,0.6465,0.7381,0.7738

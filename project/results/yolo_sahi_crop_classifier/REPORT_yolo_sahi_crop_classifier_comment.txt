@@ -1,0 +1,14 @@
+
+Phương pháp thử nghiệm sử dụng pipeline hai tầng gồm YOLO + SAHI để phát hiện vùng vật thể, sau đó crop bbox và đưa vào efficientnet_b0 để phân loại lại.
+SAHI được dùng nhằm cải thiện khả năng phát hiện vật thể nhỏ bằng cách chia ảnh thành nhiều lát nhỏ trước khi chạy detector.
+Kết quả cuối cùng được tạo bằng soft fusion giữa độ tin cậy của YOLO và độ tin cậy của crop classifier:
+
+final_score = 0.35 * yolo_conf + 0.65 * classifier_conf
+
+Kết quả validation:
+- classifier_accuracy@1 = 0.0200
+- final_accuracy@1 = 0.0200
+- classifier_top5_accuracy = 0.0350
+- fallback_full_image_ratio = 0.0900
+
+Lưu ý: nếu detector đang dùng pretrained COCO như yolo11n.pt/yolov8s.pt thì YOLO chủ yếu đóng vai trò định vị crop. Muốn fusion nhãn tốt hơn thì cần fine-tune YOLO bằng bbox custom.

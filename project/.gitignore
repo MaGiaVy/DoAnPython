@@ -3,3 +3,5 @@ data/raw/train_images/
 
 #Bỏ qua môi trường ảo của từng máy.
 venv/
+
+*.npy

@@ -1,0 +1,2 @@
+﻿method,mAP@5,Precision@1,Recall@1,Precision@3,Recall@3,Precision@5,Recall@5,Precision@10,Recall@10,name,w_global,w_crop,w_text,phash_config,candidate_k
+StrongFusion_global_crop_text_light_crop_phash_strong,0.7738221086780211,0.7981021897810219,0.4165915903240997,0.5573625304136253,0.6464767212716582,0.440992700729927,0.7381163501077022,0.29751240875912405,0.8347702061078615,global_crop_text_light_crop,0.55,0.15,0.3,strong,100

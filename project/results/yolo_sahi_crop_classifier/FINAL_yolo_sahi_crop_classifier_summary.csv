@@ -1,0 +1,2 @@
+﻿method,detector_weights,use_sahi,classifier_backbone,fusion_alpha,num_images_val,num_classes,classifier_accuracy@1,final_accuracy@1,classifier_top5_accuracy,fallback_full_image_ratio,avg_yolo_conf,avg_classifier_conf,avg_final_conf,yolo_label_match_ratio
+YOLO_SAHI_efficientnet_b0_soft_fusion,yolo11n.pt,True,efficientnet_b0,0.35,200,935,0.02,0.02,0.035,0.09,0.566378390789032,0.004770194019656628,0.20133306288893799,0.0
