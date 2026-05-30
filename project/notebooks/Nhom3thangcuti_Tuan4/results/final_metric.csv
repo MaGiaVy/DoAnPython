@@ -1,0 +1,2 @@
+﻿Model (Phương pháp chính),Kích thước Vector (Dim),Alpha tối ưu (Validation),Test mAP@5,Test Precision@1,Test Recall@5
+MobileCLIP (Zero-Shot Fusion),512,0.5,0.7708,0.7937,0.743

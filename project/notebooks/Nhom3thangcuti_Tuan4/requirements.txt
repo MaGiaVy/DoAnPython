@@ -1,0 +1,38 @@
+# ==========================================
+# 1. Core Deep Learning Framework
+# ==========================================
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# ==========================================
+# 2. Vector Search Engine (Retrieval)
+# ==========================================
+# Dùng faiss-gpu vì nhóm sử dụng Google Colab T4 GPU
+faiss-gpu>=1.7.2 
+
+# ==========================================
+# 3. Backbone Models (DINOv2, MobileCLIP, MiniLM)
+# ==========================================
+transformers>=4.35.0      # Text Tokenizer & HuggingFace Models
+timm>=0.9.0               # Thư viện chứa các pre-trained Vision Models
+sentence-transformers     # Dành cho mô hình MiniLM của GĐ2 (baseline)
+open_clip_torch           # Dành cho pipeline CLIP/MobileCLIP
+
+# ==========================================
+# 4. Object Detection & Advanced Image Processing
+# ==========================================
+ultralytics               # Chứa mạng YOLOv8 / YOLOv11
+sahi                      # Slicing Aided Hyper Inference (Cắt lát ảnh)
+rembg                     # Thư viện xóa phông nền (U-2-Net)
+opencv-python>=4.8.0      # Xử lý ảnh (cv2)
+Pillow>=9.0.0             # Xử lý ảnh gốc (PIL)
+
+# ==========================================
+# 5. Data Manipulation & Machine Learning Utils
+# ==========================================
+numpy>=1.23.0
+pandas>=2.0.0
+scikit-learn              # Dùng cho train_test_split (chia Val/Test)
+tqdm                      # Hiển thị thanh tiến trình (Progress bar) khi chạy vòng lặp
+matplotlib                # Vẽ biểu đồ Grid Search, show ảnh kết quả
