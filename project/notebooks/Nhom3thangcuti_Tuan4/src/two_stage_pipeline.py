@@ -164,10 +164,10 @@ def crop_images_with_yolo(
     image_paths: List[str],
     yolo_model: Any,                        # ultralytics.YOLO instance
     *,
-    conf_threshold: float = 0.20,
+    conf_threshold: float = 0.50,
     img_size: int = 640,
     padding_ratio: float = 0.08,
-    fallback_center_ratio: float = 0.80,
+    fallback_center_ratio: float = 0.75,
     save_dir: Optional[str] = None,
     batch_size: int = 1,
 ) -> Dict[str, Image.Image]:
