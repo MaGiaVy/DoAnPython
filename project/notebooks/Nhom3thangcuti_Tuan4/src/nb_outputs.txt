@@ -1,0 +1,304 @@
+=== CELL 3 OUTPUTS ===
+✅ GPU khả dụng:
+Fri May 29 02:57:59 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.82.07              Driver Version: 580.82.07      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla T4                       Off |   00000000:00:04.0 Off |                    0 |
+| N/A   53C    P8             14W /   70W |       0MiB /  15360MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+PyTorch version : 2.11.0+cu128
+CUDA available  : True
+GPU name        : Tesla T4
+VRAM            : 15.6 GB
+
+
+=== CELL 5 OUTPUTS ===
+[31mERROR: Could not find a version that satisfies the requirement faiss-gpu (from versions: none)[0m[31m
+[0m[31mERROR: No matching distribution found for faiss-gpu[0m[31m
+[0m⏳ Đang thử cài MobileCLIP (Apple)...
+
+/usr/local/lib/python3.12/dist-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+
+✅ MobileCLIP (Apple) cài thành công!
+
+🔧 Chế độ: MobileCLIP (Apple)
+
+
+=== CELL 7 OUTPUTS ===
+Drive already mounted at /content/drive; to attempt to forcibly remount, call drive.mount("/content/drive", force_remount=True).
+✅ Đã tự động phát hiện thư mục dữ liệu tại: /content/drive/MyDrive/DuLieuPython
+✅ Đã có thư mục ảnh giải nén cục bộ!
+   File CSV: Đã sẵn sàng (/content/drive/MyDrive/DuLieuPython/train.csv)
+   Thư mục ảnh giải nén: Đã sẵn sàng (/content/train_images_extracted/train_images)
+
+
+=== CELL 9 OUTPUTS ===
+✅ Thiết bị        : cuda
+✅ Batch size      : 128
+
+
+=== CELL 11 OUTPUTS ===
+📊 Tổng số mẫu : 34,250
+📋 Các cột     : ['posting_id', 'image', 'image_phash', 'title', 'label_group']
+         posting_id                                 image       image_phash  \
+0   train_129225211  0000a68812bc7e98c42888dfb1c07da0.jpg  94974f937d4c2433   
+1  train_3386243561  00039780dfc94d01db8676fe789ecd05.jpg  af3f9460c2838f0f   
+2  train_2288590299  000a190fdd715a2a36faed16e2c65df7.jpg  b94cb00ed3e50f78   
+
+                                               title  label_group  
+0                          Paper Bag Victoria Secret    249114794  
+1  Double Tape 3M VHB 12 mm x 4,5 m ORIGINAL / DO...   2937985045  
+2        Maling TTS Canned Pork Luncheon Meat 397 gr   2395904891  
+
+🗂️  Gallery size  : 34,250 ảnh (toàn bộ dataset)
+✅ Val queries   : 6,850 ảnh  → grid search alpha
+✅ Test queries  : 27,400 ảnh  → đánh giá cuối (1 lần!)
+
+
+=== CELL 13 OUTPUTS ===
+⏳ Đang tải mobileclip_s0...
+
+✅ MobileCLIP (mobileclip_s0) đã sẵn sàng
+📐 Embedding dim: 512
+
+
+=== CELL 15 OUTPUTS ===
+✅ Hàm trích xuất features đã sẵn sàng
+
+
+=== CELL 17 OUTPUTS ===
+✅ Hàm fusion / FAISS / evaluate đã sẵn sàng
+
+
+=== CELL 19 OUTPUTS ===
+📦 Gallery image features...
+
+🖼️ MobileCLIP image features:   0%|          | 0/268 [00:00<?, ?it/s]
+📦 Gallery text features...
+
+📝 MobileCLIP text features:   0%|          | 0/134 [00:00<?, ?it/s]
+✅ Gallery img: (34250, 512) | txt: (34250, 512)
+
+📦 Val image features...
+
+🖼️ MobileCLIP image features:   0%|          | 0/54 [00:00<?, ?it/s]
+📦 Val text features...
+
+📝 MobileCLIP text features:   0%|          | 0/27 [00:00<?, ?it/s]
+✅ Val img: (6850, 512) | txt: (6850, 512)
+
+📦 Test image features...
+
+🖼️ MobileCLIP image features:   0%|          | 0/215 [00:00<?, ?it/s]
+📦 Test text features...
+
+📝 MobileCLIP text features:   0%|          | 0/108 [00:00<?, ?it/s]
+✅ Test img: (27400, 512) | txt: (27400, 512)
+
+
+=== CELL 21 OUTPUTS ===
+🔍 Grid search alpha ∈ [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+   (alpha=1.0 → chỉ image | alpha=0.0 → chỉ text)
+────────────────────────────────────────────────────────────────
+  α=0.1 | mAP@5=0.6299 | P@1=0.6793 | R@5=0.6211 ← best
+  α=0.2 | mAP@5=0.6654 | P@1=0.7124 | R@5=0.6507 ← best
+  α=0.3 | mAP@5=0.7139 | P@1=0.7543 | R@5=0.6923 ← best
+  α=0.4 | mAP@5=0.7548 | P@1=0.7841 | R@5=0.7260 ← best
+  α=0.5 | mAP@5=0.7706 | P@1=0.7942 | R@5=0.7363 ← best
+  α=0.6 | mAP@5=0.7594 | P@1=0.7848 | R@5=0.7259
+  α=0.7 | mAP@5=0.7319 | P@1=0.7600 | R@5=0.6986
+  α=0.8 | mAP@5=0.7003 | P@1=0.7339 | R@5=0.6641
+  α=0.9 | mAP@5=0.6729 | P@1=0.7115 | R@5=0.6393
+────────────────────────────────────────────────────────────────
+
+🏆 BEST_ALPHA_2 = 0.5  (Val mAP@5 = 0.7706)
+
+📊 Bảng val đầy đủ:
+ alpha    mAP@5  Precision@1  Recall@5
+   0.1 0.629927     0.679270  0.621097
+   0.2 0.665432     0.712409  0.650657
+   0.3 0.713904     0.754307  0.692314
+   0.4 0.754786     0.784088  0.725988
+   0.5 0.770575     0.794161  0.736308
+   0.6 0.759431     0.784818  0.725874
+   0.7 0.731935     0.760000  0.698594
+   0.8 0.700332     0.733869  0.664095
+   0.9 0.672866     0.711533  0.639334
+
+
+=== CELL 23 OUTPUTS ===
+🧪 Đánh giá TEST SET với BEST_ALPHA_2 = 0.5
+⚠️  Đây là lần chạy DUY NHẤT trên test set!
+
+📊 KẾT QUẢ — Baseline 2 (MobileCLIP (mobileclip_s0)) trên TEST SET:
+   mAP@5        = 0.7708
+   Precision@1  = 0.7937
+   Recall@5     = 0.7430
+
+
+=== CELL 25 OUTPUTS ===
+📊 Final Metrics:
+    Model (Phương pháp chính) Kích thước Vector (Dim)  Alpha tối ưu (Validation)  Test mAP@5  Test Precision@1  Test Recall@5
+MobileCLIP (Zero-Shot Fusion)                     512                        0.5      0.7708            0.7937          0.743
+
+✅ Đã lưu local : /content/final_metric.csv
+✅ Đã lưu Drive  : /content/drive/MyDrive/DuLieuPython/final_metric.csv
+
+🏁 Hoàn tất xuất kết quả!
+
+
+=== CELL 28 OUTPUTS ===
+✅ Đã lưu gallery features MobileCLIP:
+   img: /content/features/mobileclip_gallery_img.npy  shape=(34250, 512)
+   txt: /content/features/mobileclip_gallery_txt.npy  shape=(34250, 512)
+
+✅ FAISS index GĐ1 sẵn sàng, best_alpha_2 = 0.5
+   Gallery size: 34,250 vectors, dim=512
+
+
+=== CELL 30 OUTPUTS ===
+✅ Load DINOv2 gallery cache từ file...
+🔄 Đang load lại DINOv2-Small model...
+
+Using cache found in /root/.cache/torch/hub/facebookresearch_dinov2_main
+/root/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/swiglu_ffn.py:51: UserWarning: xFormers is not available (SwiGLU)
+  warnings.warn("xFormers is not available (SwiGLU)")
+/root/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/attention.py:33: UserWarning: xFormers is not available (Attention)
+  warnings.warn("xFormers is not available (Attention)")
+/root/.cache/torch/hub/facebookresearch_dinov2_main/dinov2/layers/block.py:40: UserWarning: xFormers is not available (Block)
+  warnings.warn("xFormers is not available (Block)")
+
+
+✅ DINOv2 gallery shape: (34250, 384)
+
+
+=== CELL 35 OUTPUTS ===
+🎛️  Tuning retrieval_k với best_alpha_2 = 0.5
+────────────────────────────────────────────────────────────
+
+🔍 Eval 2-stage (k=50):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k= 50 | mAP@5=0.7805 | P@1=0.8026 | R@5=0.7398 ← BEST
+
+🔍 Eval 2-stage (k=100):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k=100 | mAP@5=0.7810 | P@1=0.8028 | R@5=0.7403 ← BEST
+
+🔍 Eval 2-stage (k=150):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k=150 | mAP@5=0.7813 | P@1=0.8029 | R@5=0.7406 ← BEST
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k=200 | mAP@5=0.7813 | P@1=0.8029 | R@5=0.7407 ← BEST
+────────────────────────────────────────────────────────────
+
+✅ Chọn retrieval_k = 200 với Val mAP@5 = 0.7813
+
+📊 Bảng đầy đủ:
+ retrieval_k    mAP@5  Precision@1  Recall@5
+          50 0.780527     0.802628  0.739762
+         100 0.780999     0.802774  0.740281
+         150 0.781290     0.802920  0.740613
+         200 0.781304     0.802920  0.740683
+
+
+=== CELL 36 OUTPUTS ===
+🎛️  Tuning retrieval_k với best_alpha_2 = 0.5
+────────────────────────────────────────────────────────────
+
+🔍 Eval 2-stage (k=50):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k= 50 | mAP@5=0.7805 | P@1=0.8026 | R@5=0.7398 ← BEST
+
+🔍 Eval 2-stage (k=100):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k=100 | mAP@5=0.7810 | P@1=0.8028 | R@5=0.7403 ← BEST
+
+🔍 Eval 2-stage (k=150):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k=150 | mAP@5=0.7813 | P@1=0.8029 | R@5=0.7406 ← BEST
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+  retrieval_k=200 | mAP@5=0.7813 | P@1=0.8029 | R@5=0.7407 ← BEST
+────────────────────────────────────────────────────────────
+
+✅ Chọn retrieval_k = 200 với Val mAP@5 = 0.7813
+
+📊 Bảng đầy đủ:
+ retrieval_k    mAP@5  Precision@1  Recall@5
+          50 0.780527     0.802628  0.739762
+         100 0.780999     0.802774  0.740281
+         150 0.781290     0.802920  0.740613
+         200 0.781304     0.802920  0.740683
+🎛️  Tuning beta với best_alpha_2=0.5, retrieval_k=200
+────────────────────────────────────────────────────────────
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.20 | mAP@5=0.7862 | P@1=0.8061 | R@5=0.7470
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.25 | mAP@5=0.7845 | P@1=0.8048 | R@5=0.7440
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.30 | mAP@5=0.7813 | P@1=0.8029 | R@5=0.7407
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.35 | mAP@5=0.7765 | P@1=0.7972 | R@5=0.7358
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.40 | mAP@5=0.7719 | P@1=0.7959 | R@5=0.7293
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.45 | mAP@5=0.7654 | P@1=0.7908 | R@5=0.7226
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.50 | mAP@5=0.7598 | P@1=0.7866 | R@5=0.7162
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/6850 [00:00<?, ?it/s]
+beta=0.55 | mAP@5=0.7531 | P@1=0.7815 | R@5=0.7098
+
+✅ Best beta = 0.20 với Val mAP@5 = 0.7862
+
+
+=== CELL 38 OUTPUTS ===
+⚠️  Đánh giá TEST SET – CHỈ CHẠY 1 LẦN DUY NHẤT!
+   best_alpha_2 = 0.5
+   best_k_dino  = 200
+   best_beta    = 0.20
+────────────────────────────────────────────────────────────
+
+🔍 Eval 2-stage (k=200):   0%|          | 0/27400 [00:00<?, ?it/s]
+
+🏆 KẾT QUẢ CUỐI CÙNG – MobileCLIP + DINOv2 Re-ranking (Fusion):
+   mAP@5        = 0.7872
+   Precision@1  = 0.8064
+   Recall@5     = 0.7530
+
+📈 So sánh với Baseline MobileCLIP:
+   Baseline mAP@5      = 0.7708
+   2-Stage mAP@5       = 0.7872
+   Cải thiện (Δ mAP@5) = +0.0164
+
+
+=== CELL 40 OUTPUTS ===
+📊 Final Metrics Table:
+                        Method     Dim  Alpha Retrieval_K  Test_mAP@5  Test_Precision@1  Test_Recall@5
+ MobileCLIP (Zero-Shot Fusion)     512    0.5           -      0.7708            0.7937          0.743
+MobileCLIP + DINOv2 Re-ranking 512+384    0.5         200      0.7872            0.8064          0.753
+
+✅ Đã lưu local : /content/final_metric_dinov2.csv
+✅ Đã lưu Drive  : /content/drive/MyDrive/DuLieuPython/final_metric_dinov2.csv
+
+🎉 Hoàn tất pipeline MobileCLIP + DINOv2 Re-ranking!
+
+
