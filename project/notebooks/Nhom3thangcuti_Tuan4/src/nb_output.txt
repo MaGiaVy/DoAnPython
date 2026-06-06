@@ -1,0 +1,734 @@
+=== CELL 0 (markdown) ===
+<a href="https://colab.research.google.com/github/MaGiaVy/DoAnPython/blob/main/project/notebooks/Nhom3thangcuti_Tuan4/notebooks/Tuan4_GiaVy_Test.ipynb" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
+
+=== CELL 1 (markdown) ===
+# 🏆 Baseline 2: MobileCLIP (Zero-Shot Multimodal)
+## E-commerce Visual Search — Shopee Dataset (34,250 items) | Google Colab GPU
+
+**Pipeline:**
+- 🍎 **Model:** `MobileCLIP` (Apple) — Image + Text cùng embedding space
+- 🔀 **Fusion:** `L2_Norm(α × img_feat + (1-α) × txt_feat)`
+- 🔍 **Search:** FAISS `IndexFlatIP` (Cosine Similarity)
+- 📊 **Metrics:** mAP@5, Precision@1, Recall@5
+
+**Fallback:** Nếu MobileCLIP không cài được → tự động dùng `openai/clip-vit-base-patch32` (HuggingFace).
+
+**Dataset Split (STRICT — NO DATA LEAKAGE):**
+- Gallery : toàn bộ 34,250 ảnh
+- Val queries (20%) : ~6,850 → grid search `alpha`
+- Test queries (80%) : ~27,400 → đánh giá cuối, chạy **1 lần duy nhất**
+
+=== CELL 2 (markdown) ===
+## ⚙️ Cell 0: Kiểm tra GPU & Runtime
+
+=== CELL 3 (code) ===
+# Kiểm tra GPU — nếu thấy 'No GPU' hãy vào Runtime > Change runtime type > T4 GPU
+import subprocess
+result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+if result.returncode == 0:
+    print('✅ GPU khả dụng:')
+    print(result.stdout)
+else:
+    print('❌ Không tìm thấy GPU!')
+    print('👉 Vào Runtime > Change runtime type > chọn T4 GPU rồi thử lại!')
+
+import torch
+print(f'PyTorch version : {torch.__version__}')
+print(f'CUDA available  : {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'GPU name        : {torch.cuda.get_device_name(0)}')
+    print(f'VRAM            : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
+
+=== CELL 4 (markdown) ===
+## 📦 Cell 1: Cài đặt thư viện & MobileCLIP
+
+=== CELL 5 (code) ===
+import sys, subprocess
+
+# Thư viện cơ bản
+!pip install -q faiss-gpu timm
+
+# ─── Thử cài MobileCLIP từ Apple ─────────────────────────────────────────────
+USE_MOBILECLIP = False
+print('⏳ Đang thử cài MobileCLIP (Apple)...')
+try:
+    result = subprocess.run(
+        [sys.executable, '-m', 'pip', 'install', '-q',
+         'git+https://github.com/apple/ml-mobileclip.git'],
+        capture_output=True, text=True, timeout=180
+    )
+    import mobileclip
+    USE_MOBILECLIP = True
+    print('✅ MobileCLIP (Apple) cài thành công!')
+except Exception as e:
+    print(f'⚠️  Không cài được MobileCLIP: {e}')
+    print('🔄 Fallback → openai/clip-vit-base-patch32 (HuggingFace)')
+    !pip install -q transformers
+
+print(f'\n🔧 Chế độ: {"MobileCLIP (Apple)" if USE_MOBILECLIP else "CLIP HuggingFace Fallback"}')
+
+=== CELL 6 (markdown) ===
+## 📂 Cell 2: Kết nối Google Drive & Tự động dò tìm đường dẫn Dataset
+
+=== CELL 7 (code) ===
+from google.colab import drive
+import os
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+# ─── TỰ ĐỘNG DÒ TÌM ĐƯỜNG DẪN DỮ LIỆU PHÙ HỢP ───────────────────────────────
+POSSIBLE_PATHS = [
+    '/content/drive/MyDrive/DoAnPython/DuLieuPython',
+    '/content/drive/MyDrive/DuLieuPython',
+    '/content/drive/My Drive/DoAnPython/DuLieuPython',
+    '/content/drive/My Drive/DuLieuPython'
+]
+
+DATA_DIR = None
+for path in POSSIBLE_PATHS:
+    if os.path.exists(os.path.join(path, 'train.csv')):
+        DATA_DIR = path
+        break
+
+if DATA_DIR is None:
+    # Fallback mặc định
+    DATA_DIR = '/content/drive/MyDrive/DuLieuPython/DuLieuPython'
+    print(f'⚠️ Không tìm thấy đường dẫn có chứa train.csv. Dùng mặc định: {DATA_DIR}')
+else:
+    print(f'✅ Đã tự động phát hiện thư mục dữ liệu tại: {DATA_DIR}')
+
+CSV_PATH = os.path.join(DATA_DIR, 'train.csv')
+IMAGE_ZIP_PATH = os.path.join(DATA_DIR, 'train_images')
+
+# Thư mục giải nén cục bộ trên Colab để đọc ảnh siêu nhanh
+EXTRACTED_DIR = '/content/train_images_extracted'
+IMG_DIR = os.path.join(EXTRACTED_DIR, 'train_images')
+
+# Giải nén file zip ảnh vào thư mục cục bộ của Colab nếu chưa giải nén
+if not os.path.exists(IMG_DIR):
+    if os.path.exists(IMAGE_ZIP_PATH):
+        print('⏳ Đang giải nén train_images.zip vào Colab (sẽ mất khoảng 1-2 phút)...')
+        !unzip -q {IMAGE_ZIP_PATH} -d {EXTRACTED_DIR}
+        print('✅ Giải nén thành công!')
+    else:
+        print(f'❌ Không tìm thấy file zip tại {IMAGE_ZIP_PATH}. Vui lòng kiểm tra lại Drive!')
+
+... [TRUNCATED, total 1779 chars]
+
+=== CELL 8 (markdown) ===
+## 🔧 Cell 3: Import & Cấu hình
+
+=== CELL 9 (code) ===
+# Install faiss-cpu as faiss-gpu installation failed previously.
+!pip install -q faiss-cpu
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+from tqdm.notebook import tqdm
+
+import torch
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
+import faiss
+
+# ─── Cấu hình ────────────────────────────────────────────────────────────────
+MOBILECLIP_VARIANT = 'mobileclip_s0'          # s0 (nhanh nhất) / s1 / s2 / b
+MOBILECLIP_CKPT    = '/tmp/mobileclip_s0.pt'  # sẽ download nếu cần
+
+BATCH_SIZE   = 128    # T4 GPU ~16GB VRAM
+DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu'
+RANDOM_SEED  = 42
+NUM_WORKERS  = 2
+
+print(f'✅ Thiết bị        : {DEVICE}')
+print(f'✅ Batch size      : {BATCH_SIZE}')
+
+=== CELL 10 (markdown) ===
+## 📊 Cell 4: Đọc dữ liệu & Chia tập (STRICT SPLIT)
+
+=== CELL 11 (code) ===
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+df = pd.read_csv(CSV_PATH)
+print(f'📊 Tổng số mẫu : {len(df):,}')
+print(f'📋 Các cột     : {list(df.columns)}')
+print(df.head(3))
+
+# ─── KHÔNG stratify vì số lớp (11,014) > kích thước validation (6,850) ───
+df_gallery = df.copy()
+
+val_idx, test_idx = train_test_split(
+    df.index.tolist(),
+    test_size    = 0.8,
+    random_state = RANDOM_SEED
+)
+
+df_val  = df.loc[val_idx].reset_index(drop=True)
+df_test = df.loc[test_idx].reset_index(drop=True)
+
+print(f'\n🗂️  Gallery size  : {len(df_gallery):,} ảnh (toàn bộ dataset)')
+print(f'✅ Val queries   : {len(df_val):,} ảnh  → grid search alpha')
+print(f'✅ Test queries  : {len(df_test):,} ảnh  → đánh giá cuối (1 lần!)')
+
+=== CELL 12 (markdown) ===
+## 🍎 Cell 5: Tải MobileCLIP (hoặc Fallback CLIP)
+
+=== CELL 13 (code) ===
+if USE_MOBILECLIP:
+    # ─── MobileCLIP (Apple) ───────────────────────────────────────────────────
+    import mobileclip, urllib.request
+
+    CKPT_URLS = {
+        'mobileclip_s0': 'https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s0.pt',
+        'mobileclip_s1': 'https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s1.pt',
+        'mobileclip_s2': 'https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s2.pt',
+        'mobileclip_b' : 'https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_b.pt',
+    }
+
+    if not os.path.exists(MOBILECLIP_CKPT):
+        print(f'⏬ Đang download checkpoint {MOBILECLIP_VARIANT}...')
+        urllib.request.urlretrieve(CKPT_URLS[MOBILECLIP_VARIANT], MOBILECLIP_CKPT)
+        print(f'✅ Đã lưu: {MOBILECLIP_CKPT}')
+
+    print(f'⏳ Đang tải {MOBILECLIP_VARIANT}...')
+    clip_model, _, preprocess = mobileclip.create_model_and_transforms(
+        MOBILECLIP_VARIANT, pretrained=MOBILECLIP_CKPT
+    )
+    tokenizer = mobileclip.get_tokenizer(MOBILECLIP_VARIANT)
+    clip_model = clip_model.to(DEVICE).eval()
+
+    with torch.no_grad():
+        _dummy = torch.randn(1, 3, 256, 256).to(DEVICE)
+        embed_dim = clip_model.encode_image(_dummy).shape[-1]
+
+    MODEL_LABEL = f'MobileCLIP ({MOBILECLIP_VARIANT})'
+
+else:
+    # ─── Fallback: HuggingFace CLIP ───────────────────────────────────────────
+    from transformers import CLIPModel, CLIPProc
+... [TRUNCATED, total 1911 chars]
+
+=== CELL 14 (markdown) ===
+## 🖼️📝 Cell 6: Hàm trích xuất Image & Text Features
+
+=== CELL 15 (code) ===
+class ShopeeImageDataset(Dataset):
+    def __init__(self, df, img_dir, transform=None, return_tensor=True):
+        self.df            = df
+        self.img_dir       = img_dir
+        self.transform     = transform
+        self.return_tensor = return_tensor
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        fname = self.df.iloc[idx]['image']
+        try:
+            img = Image.open(os.path.join(self.img_dir, fname)).convert('RGB')
+        except Exception:
+            img = Image.new('RGB', (256, 256), (128, 128, 128))
+        if self.return_tensor and self.transform:
+            return self.transform(img)
+        return img
+
+
+@torch.no_grad()
+def extract_image_features_clip(df_input, img_dir, batch_size=128, num_workers=2):
+    all_feats = []
+
+    if USE_MOBILECLIP:
+        dataset = ShopeeImageDataset(df_input, img_dir,
+                                     transform=preprocess, return_tensor=True)
+        loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                             num_workers=num_workers, pin_memory=True)
+        for imgs in tqdm(loader, desc='🖼️ MobileCLIP image features'):
+            feats = clip_model.encode_image(imgs.to(DEVICE))
+            all_feats.append(feats.cpu().float().numpy())
+    else:
+        dataset = ShopeeImageDataset(df_input, img_dir, return_tensor=False)
+        for i in tqdm(range(0, len(dataset), batch_size),
+                      desc='🖼️ CLIP HuggingFace image feature
+... [TRUNCATED, total 2913 chars]
+
+=== CELL 16 (markdown) ===
+## 🔀 Cell 7: Fusion, FAISS & Metrics Utils
+
+=== CELL 17 (code) ===
+def fuse_and_normalize_clip(img_feats, txt_feats, alpha):
+    fused = alpha * img_feats + (1 - alpha) * txt_feats
+    norms = np.linalg.norm(fused, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1e-10, norms)
+    return (fused / norms).astype(np.float32)
+
+
+def build_faiss_index(features):
+    index = faiss.IndexFlatIP(features.shape[1])
+    index.add(features)
+    return index
+
+def get_ground_truth_dict(df_input):
+    gt = {}
+    for _, grp in df_input.groupby('label_group'):
+        ids = set(grp['posting_id'].tolist())
+        for pid in ids:
+            gt[pid] = ids
+    return gt
+
+
+def evaluate_retrieval_clip(query_df, gallery_df, query_img, query_txt,
+                             gallery_img, gallery_txt, alpha, K=5):
+    q_fused      = fuse_and_normalize_clip(query_img, query_txt, alpha)
+    g_fused      = fuse_and_normalize_clip(gallery_img, gallery_txt, alpha)
+    gt_dict      = get_ground_truth_dict(gallery_df)
+    index        = build_faiss_index(g_fused)
+    _, indices   = index.search(q_fused, K + 1)
+    gallery_pids = gallery_df['posting_id'].tolist()
+
+    ap_list, p1_list, r5_list = [], [], []
+
+    for i, row in enumerate(query_df.itertuples()):
+        qid      = row.posting_id
+        relevant = gt_dict.get(qid, set()) - {qid}
+        if not relevant:
+            continue
+
+        retrieved = []
+        for idx in indices[i]:
+            pid = gallery_pids[idx]
+            if pid != qid:
+                retrieved.append(pid)
+            if len(retriev
+... [TRUNCATED, total 2124 chars]
+
+=== CELL 18 (markdown) ===
+## 🔍 Cell 8: Trích xuất tất cả Features
+
+=== CELL 19 (code) ===
+# ─── Gallery ─────────────────────────────────────────────────────────────────
+print('📦 Gallery image features...')
+gallery_img_feats = extract_image_features_clip(df_gallery, IMG_DIR, BATCH_SIZE, NUM_WORKERS)
+print('📦 Gallery text features...')
+gallery_txt_feats = extract_text_features_clip(df_gallery)
+print(f'✅ Gallery img: {gallery_img_feats.shape} | txt: {gallery_txt_feats.shape}')
+
+# ─── Val ─────────────────────────────────────────────────────────────────────
+print('\n📦 Val image features...')
+val_img_feats = extract_image_features_clip(df_val, IMG_DIR, BATCH_SIZE, NUM_WORKERS)
+print('📦 Val text features...')
+val_txt_feats = extract_text_features_clip(df_val)
+print(f'✅ Val img: {val_img_feats.shape} | txt: {val_txt_feats.shape}')
+
+# ─── Test ────────────────────────────────────────────────────────────────────
+print('\n📦 Test image features...')
+test_img_feats = extract_image_features_clip(df_test, IMG_DIR, BATCH_SIZE, NUM_WORKERS)
+print('📦 Test text features...')
+test_txt_feats = extract_text_features_clip(df_test)
+print(f'✅ Test img: {test_img_feats.shape} | txt: {test_txt_feats.shape}')
+
+=== CELL 20 (markdown) ===
+## 🎯 Cell 9: Grid Search Alpha — Validation Set
+
+=== CELL 21 (code) ===
+# ⚠️ Grid search CHỈ trên VAL — KHÔNG đụng Test!
+
+alphas = np.arange(0.1, 1.0, 0.1).round(1)
+print(f'🔍 Grid search alpha ∈ {alphas.tolist()}')
+print(f'   (alpha=1.0 → chỉ image | alpha=0.0 → chỉ text)')
+print('─' * 64)
+
+val_results_2 = []
+best_alpha_2, best_map5_2 = None, -1.0
+
+for alpha in alphas:
+    m = evaluate_retrieval_clip(
+        query_df    = df_val,
+        gallery_df  = df_gallery,
+        query_img   = val_img_feats,
+        query_txt   = val_txt_feats,
+        gallery_img = gallery_img_feats,
+        gallery_txt = gallery_txt_feats,
+        alpha=alpha, K=5
+    )
+    val_results_2.append({'alpha': alpha, **m})
+    marker = ' ← best' if m['mAP@5'] > best_map5_2 else ''
+    print(f'  α={alpha:.1f} | mAP@5={m["mAP@5"]:.4f} | '
+          f'P@1={m["Precision@1"]:.4f} | R@5={m["Recall@5"]:.4f}{marker}')
+    if m['mAP@5'] > best_map5_2:
+        best_map5_2   = m['mAP@5']
+        best_alpha_2  = alpha
+
+print('─' * 64)
+print(f'\n🏆 BEST_ALPHA_2 = {best_alpha_2:.1f}  (Val mAP@5 = {best_map5_2:.4f})')
+
+# In bảng đầy đủ
+df_val_summary = pd.DataFrame(val_results_2)
+print('\n📊 Bảng val đầy đủ:')
+print(df_val_summary.to_string(index=False))
+
+=== CELL 22 (markdown) ===
+## 🧪 Cell 10: Đánh giá TEST SET (Chạy 1 lần duy nhất!)
+
+=== CELL 23 (code) ===
+
+# Sửa None thành 0.5
+print(f'🧪 Đánh giá TEST SET với BEST_ALPHA_2 = {best_alpha_2:.1f}')
+#best_alpha_2, best_map5_2 = 0.5, -1.0
+print('⚠️  Đây là lần chạy DUY NHẤT trên test set!\n')
+
+test_metrics_2 = evaluate_retrieval_clip(
+    query_df    = df_test,
+    gallery_df  = df_gallery,
+    query_img   = test_img_feats,
+    query_txt   = test_txt_feats,
+    gallery_img = gallery_img_feats,
+    gallery_txt = gallery_txt_feats,
+    alpha       = best_alpha_2, K=5
+)
+
+print(f'📊 KẾT QUẢ — Baseline 2 ({MODEL_LABEL}) trên TEST SET:')
+print(f'   mAP@5        = {test_metrics_2["mAP@5"]:.4f}')
+print(f'   Precision@1  = {test_metrics_2["Precision@1"]:.4f}')
+print(f'   Recall@5     = {test_metrics_2["Recall@5"]:.4f}')
+
+=== CELL 24 (markdown) ===
+## 📋 Cell 11: XUẤT RA FILE
+
+=== CELL 25 (code) ===
+import pandas as pd, os
+
+# ─── Tổng hợp metrics ─────────────────────────────────────────────────────────
+metrics_data = [
+    {
+        "Model (Phương pháp chính)": "MobileCLIP (Zero-Shot Fusion)",
+        "Kích thước Vector (Dim)": str(embed_dim),
+        "Alpha tối ưu (Validation)": round(float(best_alpha_2), 1),
+        "Test mAP@5": round(test_metrics_2["mAP@5"], 4),
+        "Test Precision@1": round(test_metrics_2["Precision@1"], 4),
+        "Test Recall@5": round(test_metrics_2["Recall@5"], 4),
+    }
+]
+
+df_metrics = pd.DataFrame(metrics_data)
+print('📊 Final Metrics:')
+print(df_metrics.to_string(index=False))
+
+# ─── Lưu local (Colab /content/) ──────────────────────────────────────────────
+LOCAL_CSV = "/content/final_metric.csv"
+df_metrics.to_csv(LOCAL_CSV, index=False, encoding='utf-8-sig')
+print(f"\n✅ Đã lưu local : {LOCAL_CSV}")
+
+# ─── Lưu lên Google Drive (cùng thư mục DATA_DIR) ─────────────────────────────
+DRIVE_CSV = os.path.join(DATA_DIR, "final_metric.csv")
+df_metrics.to_csv(DRIVE_CSV, index=False, encoding='utf-8-sig')
+print(f"✅ Đã lưu Drive  : {DRIVE_CSV}")
+
+print('\n🏁 Hoàn tất xuất kết quả!')
+
+
+=== CELL 26 (markdown) ===
+---
+# 🚀 PIPELINE 2 GIAI ĐOẠN: MobileCLIP + DINOv2 Re-ranking
+
+**Kiến trúc:**
+- **Giai đoạn 1 (GĐ1):** MobileCLIP lấy top-K ứng viên (K = 100)
+- **Giai đoạn 2 (GĐ2):** DINOv2-Small tính lại similarity → sắp xếp lại → Top-5 cuối cùng
+
+**Mục tiêu:** Nâng cấp baseline MobileCLIP + Alpha Tuning (mAP@5 ≈ 0.77)
+
+=== CELL 27 (markdown) ===
+## 🧠 Bước 0: Chuẩn bị – Lưu các thành phần MobileCLIP đã có
+
+=== CELL 28 (code) ===
+import os
+import numpy as np
+import faiss
+
+# ── Đường dẫn lưu cache features ──────────────────────────────
+FEAT_DIR = '/content/features'
+os.makedirs(FEAT_DIR, exist_ok=True)
+
+# ── Lưu cache gallery features MobileCLIP (nếu chưa có) ───────
+GALLERY_IMG_CACHE = os.path.join(FEAT_DIR, 'mobileclip_gallery_img.npy')
+GALLERY_TXT_CACHE = os.path.join(FEAT_DIR, 'mobileclip_gallery_txt.npy')
+
+np.save(GALLERY_IMG_CACHE, gallery_img_feats)
+np.save(GALLERY_TXT_CACHE, gallery_txt_feats)
+print(f'✅ Đã lưu gallery features MobileCLIP:')
+print(f'   img: {GALLERY_IMG_CACHE}  shape={gallery_img_feats.shape}')
+print(f'   txt: {GALLERY_TXT_CACHE}  shape={gallery_txt_feats.shape}')
+
+# ── Build FAISS index cho GĐ1 ─────────────────────────────────
+# Dùng best_alpha_2 từ bước grid search đã chạy
+gallery_fused_stage1 = fuse_and_normalize_clip(
+    gallery_img_feats, gallery_txt_feats, best_alpha_2
+)
+faiss_index_stage1 = build_faiss_index(gallery_fused_stage1)
+
+print(f'\n✅ FAISS index GĐ1 sẵn sàng, best_alpha_2 = {best_alpha_2:.1f}')
+print(f'   Gallery size: {faiss_index_stage1.ntotal:,} vectors, dim={gallery_fused_stage1.shape[1]}')
+
+=== CELL 29 (markdown) ===
+## 🦕 Bước 1: Cache Đặc Trưng DINOv2-Small Cho Gallery
+
+Chạy **1 lần duy nhất** – kết quả được lưu vào `features/dinov2_gallery.npy`.
+
+> **Lưu ý quản lý VRAM:** DINOv2 và MobileCLIP không thể đồng thời trên GPU T4.  
+> Hãy chắc chắn **xóa MobileCLIP** trước khi load DINOv2 (xem Bước 1.5).
+
+=== CELL 30 (code) ===
+import torch
+import torch.nn.functional as F
+from torchvision import transforms
+import numpy as np
+from PIL import Image
+from tqdm.notebook import tqdm
+import gc, os
+
+DINO_CACHE_PATH = os.path.join(FEAT_DIR, 'dinov2_gallery.npy')
+
+if not os.path.exists(DINO_CACHE_PATH):
+    print('🔄 Đang tính toán DINOv2 gallery features (lần đầu tiên)...')
+    print('⚠️  Dọn VRAM trước khi load DINOv2...')
+
+    # ── 1.5: Giải phóng MobileCLIP khỏi VRAM ──────────────────
+    try:
+        del clip_model
+        print('   clip_model đã xóa')
+    except NameError:
+        pass
+    gc.collect()
+    torch.cuda.empty_cache()
+    print('🧹 VRAM đã dọn sạch!')
+
+    # ── 1.1: Load DINOv2-Small ─────────────────────────────────
+    print('\n🦕 Đang load DINOv2-Small...')
+    dinov2 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+    dinov2 = dinov2.to(DEVICE).eval()
+    print('✅ DINOv2-Small sẵn sàng!')
+
+    # ── 1.2: Transform ảnh chuẩn DINOv2 ───────────────────────
+    transform_dino = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+    ])
+
+    @torch.no_grad()
+    def get_dinov2_embedding(img_path):
+        """Trả về vector 384 chiều đã chuẩn hóa L2."""
+        try:
+            img = Image.open(img_path).convert('RGB')
+        except Exception:
+            img = Image.new('RGB', (224, 224), (128, 128, 128
+... [TRUNCATED, total 3655 chars]
+
+=== CELL 31 (markdown) ===
+## 🔎 Bước 2: Hàm Tìm Kiếm 2 Giai Đoạn
+
+=== CELL 32 (markdown) ===
+
+
+=== CELL 33 (code) ===
+# Xây dựng mapping index: posting_id -> index trong gallery
+gallery_pids_list = df_gallery['posting_id'].tolist()
+
+
+def search_mobileclip_stage1(query_fused_vec, top_k=100):
+    """
+    GĐ1: Dùng FAISS để tìm top_k ứng viên.
+    query_fused_vec: np.array shape (dim,) đã fusion + normalize.
+    Trả về: (candidate_indices, candidate_scores)
+    """
+    q = query_fused_vec.reshape(1, -1).astype(np.float32)
+    scores, indices = faiss_index_stage1.search(q, top_k)
+    return indices[0].tolist(), scores[0].tolist()
+
+
+def fuse_single_clip(img_feat, txt_feat, alpha):
+    """Fusion + L2-normalize cho 1 query."""
+    fused = alpha * img_feat + (1 - alpha) * txt_feat
+    norm = np.linalg.norm(fused)
+    if norm < 1e-10:
+        norm = 1e-10
+    return (fused / norm).astype(np.float32)
+
+
+def search_two_stage(query_img_path, query_img_feat, query_txt_feat,
+                     alpha, query_idx=None, retrieval_k=100, final_k=5,
+                     beta=0.3):   # ← thêm beta
+    """
+    Pipeline 2 giai đoạn có fusion điểm:
+      GĐ1: MobileCLIP FAISS → top retrieval_k ứng viên
+      GĐ2: DINOv2 + MobileCLIP fusion → chọn final_k tốt nhất
+    """
+    # ─── Giai đoạn 1: MobileCLIP FAISS ───────────────────────────
+    q_fused = fuse_single_clip(query_img_feat, query_txt_feat, alpha)
+    # Lấy nhiều hơn 1 để sau khi loại self‑match vẫn đủ retrieval_k
+    raw_indices, raw_scores = search_mobileclip_stage1(q_fused, top_k=retrieval_k + 1)
+
+    # Loại bỏ query_idx nếu có
+    candidate_indices = 
+... [TRUNCATED, total 2484 chars]
+
+=== CELL 34 (markdown) ===
+## 🎛️ Bước 3: Hàm Đánh Giá + Tuning `retrieval_k` Trên Validation Set
+
+> **Lưu ý:** Chỉ tuning trên **Val set** – KHÔNG dùng Test set để tuning!
+
+=== CELL 35 (code) ===
+from tqdm.notebook import tqdm
+
+from tqdm.notebook import tqdm
+
+def evaluate_map_two_stage(query_df, alpha, retrieval_k, final_k=5,
+                           query_img_feats=None, query_txt_feats=None,
+                           beta=0.3):   # ← thêm beta
+    """
+    Đánh giá mAP@final_k với pipeline 2 giai đoạn.
+    Args:
+        query_df       : DataFrame (val hoặc test)
+        alpha          : trọng số fusion MobileCLIP
+        retrieval_k    : số ứng viên lấy từ GĐ1
+        final_k        : số kết quả đánh giá cuối cùng
+        query_img_feats: np.array đặc trưng ảnh MobileCLIP của query
+        query_txt_feats: np.array đặc trưng text MobileCLIP của query
+        beta           : trọng số cho DINOv2 trong fusion (0 = chỉ CLIP, 1 = chỉ DINOv2)
+    Returns:
+        dict chứa mAP@5, Precision@1, Recall@5
+    """
+    # Ánh xạ posting_id → index trong gallery (để lấy query_idx)
+    gallery_pids = df_gallery['posting_id'].tolist()
+    pid_to_gallery_idx = {pid: idx for idx, pid in enumerate(gallery_pids)}
+
+    gt_dict = get_ground_truth_dict(df_gallery)
+    ap_list, p1_list, r5_list = [], [], []
+
+    for i, row in tqdm(
+        enumerate(query_df.itertuples()),
+        total=len(query_df),
+        desc=f'🔍 Eval 2-stage (k={retrieval_k})'
+    ):
+        qid = row.posting_id
+        relevant = gt_dict.get(qid, set()) - {qid}
+        if not relevant:
+            continue
+
+        query_img_path = os.path.join(IMG_DIR, row.image)
+        q_img_feat = query_img_feats[i]
+        q
+... [TRUNCATED, total 4040 chars]
+
+=== CELL 36 (code) ===
+best_beta = 0.3
+best_val_map_beta = 0.0
+
+print(f'🎛️  Tuning beta với best_alpha_2={best_alpha_2:.1f}, retrieval_k={best_k_dino}')
+print('─' * 60)
+
+for beta in np.arange(0.2, 0.6, 0.05):   # 0.2, 0.25, 0.3, ..., 0.55
+    val_m = evaluate_map_two_stage(
+        query_df=df_val,
+        alpha=best_alpha_2,
+        retrieval_k=best_k_dino,
+        final_k=5,
+        query_img_feats=val_img_feats,
+        query_txt_feats=val_txt_feats,
+        beta=beta
+    )
+    print(f'beta={beta:.2f} | mAP@5={val_m["mAP@5"]:.4f} | P@1={val_m["Precision@1"]:.4f} | R@5={val_m["Recall@5"]:.4f}')
+    if val_m['mAP@5'] > best_val_map_beta:
+        best_val_map_beta = val_m['mAP@5']
+        best_beta = beta
+
+print(f'\n✅ Best beta = {best_beta:.2f} với Val mAP@5 = {best_val_map_beta:.4f}')
+
+=== CELL 37 (markdown) ===
+## 🧪 Bước 4: Đánh Giá CUỐI CÙNG Trên Test Set (Chạy 1 Lần!)
+
+> ⚠️ **CHỈ CHẠY CELL NÀY 1 LẦN DUY NHẤT** sau khi đã hoàn tất tuning trên Val set.
+
+=== CELL 38 (code) ===
+import pandas as pd
+
+print('⚠️  Đánh giá TEST SET – CHỈ CHẠY 1 LẦN DUY NHẤT!')
+print(f'   best_alpha_2 = {best_alpha_2:.1f}')
+print(f'   best_k_dino  = {best_k_dino}')
+print(f'   best_beta    = {best_beta:.2f}')
+print('─' * 60)
+
+test_metrics_dino = evaluate_map_two_stage(
+    query_df=df_test,
+    alpha=best_alpha_2,
+    retrieval_k=best_k_dino,
+    final_k=5,
+    query_img_feats=test_img_feats,
+    query_txt_feats=test_txt_feats,
+    beta=best_beta
+)
+
+print(f'\n🏆 KẾT QUẢ CUỐI CÙNG – MobileCLIP + DINOv2 Re-ranking (Fusion):')
+print(f'   mAP@5        = {test_metrics_dino["mAP@5"]:.4f}')
+print(f'   Precision@1  = {test_metrics_dino["Precision@1"]:.4f}')
+print(f'   Recall@5     = {test_metrics_dino["Recall@5"]:.4f}')
+
+# So sánh với baseline
+if 'test_metrics_2' in dir():
+    improvement = test_metrics_dino['mAP@5'] - test_metrics_2['mAP@5']
+    print(f'\n📈 So sánh với Baseline MobileCLIP:')
+    print(f'   Baseline mAP@5      = {test_metrics_2["mAP@5"]:.4f}')
+    print(f'   2-Stage mAP@5       = {test_metrics_dino["mAP@5"]:.4f}')
+    print(f'   Cải thiện (Δ mAP@5) = {improvement:+.4f}')
+else:
+    print('\n⚠️  Chưa có kết quả baseline MobileCLIP để so sánh. Hãy chạy lại cell đánh giá baseline.')
+
+=== CELL 39 (markdown) ===
+## 💾 Bước 5: Xuất Kết Quả Ra File CSV
+
+=== CELL 40 (code) ===
+import pandas as pd, os
+
+# ── Tổng hợp tất cả metrics ───────────────────────────────────
+metrics_data_full = [
+    {
+        'Method'          : 'MobileCLIP (Zero-Shot Fusion)',
+        'Dim'             : str(embed_dim),
+        'Alpha'           : round(float(best_alpha_2), 1),
+        'Retrieval_K'     : '-',
+        'Test_mAP@5'      : round(test_metrics_2['mAP@5'], 4),
+        'Test_Precision@1': round(test_metrics_2['Precision@1'], 4),
+        'Test_Recall@5'   : round(test_metrics_2['Recall@5'], 4),
+    },
+    {
+        'Method'          : 'MobileCLIP + DINOv2 Re-ranking',
+        'Dim'             : f'{embed_dim}+384',
+        'Alpha'           : round(float(best_alpha_2), 1),
+        'Retrieval_K'     : best_k_dino,
+        'Test_mAP@5'      : round(test_metrics_dino['mAP@5'], 4),
+        'Test_Precision@1': round(test_metrics_dino['Precision@1'], 4),
+        'Test_Recall@5'   : round(test_metrics_dino['Recall@5'], 4),
+    },
+]
+
+df_final = pd.DataFrame(metrics_data_full)
+print('📊 Final Metrics Table:')
+print(df_final.to_string(index=False))
+
+# ── Lưu local (/content/) ─────────────────────────────────────
+LOCAL_CSV_DINO = '/content/final_metric_dinov2.csv'
+df_final.to_csv(LOCAL_CSV_DINO, index=False, encoding='utf-8-sig')
+print(f'\n✅ Đã lưu local : {LOCAL_CSV_DINO}')
+
+# ── Lưu lên Google Drive ──────────────────────────────────────
+DRIVE_CSV_DINO = os.path.join(DATA_DIR, 'final_metric_dinov2.csv')
+df_final.to_csv(DRIVE_CSV_DINO, index=False, encoding='utf-8-sig')
+pr
+... [TRUNCATED, total 1606 chars]
+
+
+TOTAL CELLS: 41
