@@ -5,3 +5,5 @@ data/raw/train_images/
 venv/
 
 *.npy
+
+.venv/

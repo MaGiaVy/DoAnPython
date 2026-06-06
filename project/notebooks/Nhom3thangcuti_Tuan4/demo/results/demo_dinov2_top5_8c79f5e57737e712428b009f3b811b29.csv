@@ -1,0 +1,6 @@
+﻿rank,score,query_index,result_index,query_image,result_image,query_label,result_label,is_correct,result_path
+1,0.4622783660888672,0,1361,8c79f5e57737e712428b009f3b811b29.jpg,481cc5591410b7eb0df6fc7719de0834.jpg,3829989058,220504063,False,E:\study\DuLieuPython\data\raw\train_images\481cc5591410b7eb0df6fc7719de0834.jpg
+2,0.4468384385108948,0,17092,8c79f5e57737e712428b009f3b811b29.jpg,32d4c8660b0cc022a9a3bc30976187a4.jpg,3829989058,3480879772,False,E:\study\DuLieuPython\data\raw\train_images\32d4c8660b0cc022a9a3bc30976187a4.jpg
+3,0.4299268424510956,0,27291,8c79f5e57737e712428b009f3b811b29.jpg,2818f62e52cfdfc1dbe10fd8bdc14908.jpg,3829989058,1614773397,False,E:\study\DuLieuPython\data\raw\train_images\2818f62e52cfdfc1dbe10fd8bdc14908.jpg
+4,0.42150720953941345,0,19151,8c79f5e57737e712428b009f3b811b29.jpg,e2a474ec0ed408020bf62d150b6aab1d.jpg,3829989058,4192123820,False,E:\study\DuLieuPython\data\raw\train_images\e2a474ec0ed408020bf62d150b6aab1d.jpg
+5,0.41317039728164673,0,6111,8c79f5e57737e712428b009f3b811b29.jpg,ef5142073247cd1ed62db07ea1bea17e.jpg,3829989058,4282435707,False,E:\study\DuLieuPython\data\raw\train_images\ef5142073247cd1ed62db07ea1bea17e.jpg
